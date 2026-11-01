@@ -5,6 +5,11 @@ pub const TANK_ITEM: &str = "储罐";
 pub const PIPE_ITEM: &str = "管道";
 pub const PUMP_ITEM: &str = "测试泵";
 pub const VALVE_ITEM: &str = "阀门";
+pub const VESSEL_ITEM: &str = "密闭罐";
+pub const HEAT_EXCHANGER_ITEM: &str = "双流换热器";
+pub const PIPE_RACK_ITEM: &str = "管架";
+pub const MAX_PIPE_ROUTE: usize = 32;
+pub const PIPE_START_RANGE: f32 = 32.0;
 // Keep a complete visible equipment message below the transport's 1 MiB frame limit,
 // including the worst-case material names and MessagePack overhead.
 pub const MAX_EQUIPMENT: usize = 1024;
@@ -16,6 +21,9 @@ pub enum EquipmentKind {
     Pipe,
     Pump,
     Valve,
+    Vessel,
+    HeatExchanger,
+    PipeRack,
 }
 impl EquipmentKind {
     pub fn item_name(self) -> &'static str {
@@ -24,6 +32,9 @@ impl EquipmentKind {
             Self::Pipe => PIPE_ITEM,
             Self::Pump => PUMP_ITEM,
             Self::Valve => VALVE_ITEM,
+            Self::Vessel => VESSEL_ITEM,
+            Self::HeatExchanger => HEAT_EXCHANGER_ITEM,
+            Self::PipeRack => PIPE_RACK_ITEM,
         }
     }
     pub fn from_item(name: &str) -> Option<Self> {
@@ -32,13 +43,17 @@ impl EquipmentKind {
             PIPE_ITEM => Some(Self::Pipe),
             PUMP_ITEM => Some(Self::Pump),
             VALVE_ITEM => Some(Self::Valve),
+            VESSEL_ITEM => Some(Self::Vessel),
+            HEAT_EXCHANGER_ITEM => Some(Self::HeatExchanger),
+            PIPE_RACK_ITEM => Some(Self::PipeRack),
             _ => None,
         }
     }
     pub fn size(self) -> [i32; 3] {
         match self {
-            Self::Tank => [2, 3, 2],
-            Self::Pipe | Self::Pump | Self::Valve => [1; 3],
+            Self::Tank | Self::Vessel => [2, 3, 2],
+            Self::HeatExchanger => [2, 1, 3],
+            Self::Pipe | Self::Pump | Self::Valve | Self::PipeRack => [1; 3],
         }
     }
 }
@@ -50,6 +65,108 @@ pub struct MaterialAmount {
     pub moles: f64,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum HeatControlMode {
+    Off,
+    Manual,
+    OutletTemperature,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ThermalSettings {
+    pub mode: HeatControlMode,
+    pub duty_fraction: f64,
+    /// Temperature target on exchanger circuit A, in kelvin.
+    pub target_temperature_k: f64,
+}
+impl Default for ThermalSettings {
+    fn default() -> Self {
+        Self {
+            mode: HeatControlMode::Off,
+            duty_fraction: 1.0,
+            target_temperature_k: 330.0,
+        }
+    }
+}
+impl ThermalSettings {
+    pub fn valid(&self) -> bool {
+        self.duty_fraction.is_finite()
+            && (0.0..=1.0).contains(&self.duty_fraction)
+            && self.target_temperature_k.is_finite()
+            && (250.0..=600.0).contains(&self.target_temperature_k)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ReadingQuality {
+    Available,
+    NoFlow,
+    Unavailable,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ControlState {
+    Off,
+    Manual,
+    Regulating,
+    Limited,
+}
+
+/// Derived observations. Component order is n-butane, n-pentane. Never persisted.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ThermalReading {
+    pub vapor_fraction: Option<f64>,
+    pub liquid_moles: [f64; 2],
+    pub vapor_moles: [f64; 2],
+    /// Positive heat enters circuit A; circuit B receives its exact negative.
+    pub heat_w: f64,
+    pub inlet_temperature_k: [Option<f64>; 2],
+    pub outlet_temperature_k: [Option<f64>; 2],
+    pub flow_m3_s: [f64; 2],
+    pub quality: ReadingQuality,
+    pub control_state: ControlState,
+    pub sampled_at_tick: u64,
+}
+impl ThermalReading {
+    pub fn valid(&self) -> bool {
+        self.vapor_fraction
+            .is_none_or(|v| v.is_finite() && (0.0..=1.0).contains(&v))
+            && self
+                .liquid_moles
+                .iter()
+                .chain(&self.vapor_moles)
+                .all(|v| v.is_finite() && (0.0..=1e12).contains(v))
+            && self.heat_w.is_finite()
+            && self.heat_w.abs() <= 1e15
+            && self
+                .inlet_temperature_k
+                .iter()
+                .chain(&self.outlet_temperature_k)
+                .all(|v| v.is_none_or(|t| t.is_finite() && (0.0..=1e6).contains(&t)))
+            && self
+                .flow_m3_s
+                .iter()
+                .all(|v| v.is_finite() && v.abs() <= 1e9)
+            && self.sampled_at_tick <= i64::MAX as u64
+    }
+}
+impl Default for ThermalReading {
+    fn default() -> Self {
+        Self {
+            vapor_fraction: None,
+            liquid_moles: [0.0; 2],
+            vapor_moles: [0.0; 2],
+            heat_w: 0.0,
+            inlet_temperature_k: [None; 2],
+            outlet_temperature_k: [None; 2],
+            flow_m3_s: [0.0; 2],
+            quality: ReadingQuality::Unavailable,
+            control_state: ControlState::Off,
+            sampled_at_tick: 0,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct EquipmentSnapshot {
     pub id: u64,
@@ -58,11 +175,15 @@ pub struct EquipmentSnapshot {
     pub origin: [i32; 3],
     /// Pipe direction: 0 = X, 1 = Y, 2 = Z. Tanks use 0.
     pub axis: u8,
+    /// Explicit sorted faces: -X,+X,-Y,+Y,-Z,+Z. None keeps the legacy axis pair.
+    /// Only ordinary pipes may carry these two ends; no branches are implied.
+    pub pipe_ends: Option<[u8; 2]>,
     pub contents: Vec<MaterialAmount>,
     pub internal_energy_j: f64,
     pub enabled: bool,
     pub opening: f64,
     pub pump_reversed: bool,
+    pub thermal: Option<ThermalSettings>,
     /// Derived presentation only; never persisted as an authoritative inventory.
     pub reading: Option<EquipmentReading>,
 }
@@ -73,10 +194,11 @@ pub struct EquipmentReading {
     pub pressure_pa: Option<f64>,
     pub volume_m3: f64,
     pub capacity_m3: f64,
-    /// Tanks report net inflow; inline devices report positive flow from their
-    /// negative-axis port to their positive-axis port.
+    /// Tanks report net inflow; inline devices report positive flow from port 0
+    /// to port 1 (legacy straight devices: negative axis to positive axis).
     pub flow_m3_s: f64,
     pub status: String,
+    pub thermal: Option<ThermalReading>,
 }
 impl EquipmentReading {
     pub fn valid(&self) -> bool {
@@ -92,6 +214,7 @@ impl EquipmentReading {
             && self.flow_m3_s.is_finite()
             && self.flow_m3_s.abs() <= 1e9
             && self.status.len() <= 96
+            && self.thermal.as_ref().is_none_or(ThermalReading::valid)
     }
 }
 impl EquipmentSnapshot {
@@ -101,7 +224,16 @@ impl EquipmentSnapshot {
             && self.id <= i64::MAX as u64
             && self.revision <= i64::MAX as u64
             && self.axis <= 2
-            && (self.kind != EquipmentKind::Tank || self.axis == 0)
+            && (self.kind != EquipmentKind::PipeRack || self.axis != 1)
+            && match (self.kind, self.pipe_ends) {
+                (EquipmentKind::Pipe, Some([a, b])) => a < b && b < 6,
+                (_, None) => true,
+                _ => false,
+            }
+            && (!matches!(
+                self.kind,
+                EquipmentKind::Tank | EquipmentKind::Vessel | EquipmentKind::HeatExchanger
+            ) || self.axis == 0)
             && crate::valid_voxel(self.origin)
             && self.origin[1] > 0
             && (0..3).all(|i| {
@@ -115,6 +247,11 @@ impl EquipmentSnapshot {
             && self.internal_energy_j.abs() <= 1e18
             && self.opening.is_finite()
             && (0.0..=1.0).contains(&self.opening)
+            && match (&self.thermal, self.kind) {
+                (Some(settings), EquipmentKind::HeatExchanger) => settings.valid(),
+                (None, kind) => kind != EquipmentKind::HeatExchanger,
+                _ => false,
+            }
             && self.reading.as_ref().is_none_or(EquipmentReading::valid)
             && self.contents.len() <= MAX_MATERIAL_COMPONENTS
             && self.contents.iter().enumerate().all(|(index, component)| {
@@ -139,6 +276,30 @@ impl EquipmentSnapshot {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum EquipmentCommand {
+    BeginPipe {
+        request_id: u64,
+        yaw: f32,
+        pitch: f32,
+    },
+    LayPipe {
+        request_id: u64,
+        start: PipeAnchor,
+        end: PipeAnchor,
+        cells: Vec<[i32; 3]>,
+        yaw: f32,
+        pitch: f32,
+        inventory_revision: u64,
+    },
+    CancelPipe {
+        request_id: u64,
+    },
+    ConfigureThermal {
+        id: u64,
+        revision: u64,
+        yaw: f32,
+        pitch: f32,
+        settings: ThermalSettings,
+    },
     Place {
         target: [i32; 3],
         yaw: f32,
@@ -166,6 +327,50 @@ pub enum EquipmentCommand {
     },
 }
 
+/// A validated interface of an existing device. New route cells exclude anchors.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PipeAnchor {
+    pub id: u64,
+    pub revision: u64,
+    pub port: u8,
+}
+impl PipeAnchor {
+    pub fn valid(self) -> bool {
+        self.id > 0
+            && self.id <= i64::MAX as u64
+            && self.revision <= i64::MAX as u64
+            && self.port < 4
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PipeRouteStage {
+    Started,
+    Laid,
+    Cancelled,
+    Rejected,
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PipeRouteReply {
+    pub request_id: u64,
+    pub stage: PipeRouteStage,
+    pub anchor: Option<PipeAnchor>,
+    pub message: String,
+}
+impl PipeRouteReply {
+    pub fn valid(&self) -> bool {
+        self.request_id > 0
+            && self.request_id <= i64::MAX as u64
+            && self.anchor.is_none_or(PipeAnchor::valid)
+            && self.message.len() <= 256
+            && match self.stage {
+                PipeRouteStage::Started => self.anchor.is_some(),
+                PipeRouteStage::Laid | PipeRouteStage::Cancelled => self.anchor.is_none(),
+                PipeRouteStage::Rejected => true,
+            }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -177,6 +382,7 @@ mod tests {
             kind: EquipmentKind::Tank,
             origin: [-1, 1, -1],
             axis: 0,
+            pipe_ends: None,
             contents: vec![MaterialAmount {
                 material: "icheme:water".into(),
                 moles: 55.5,
@@ -185,6 +391,7 @@ mod tests {
             enabled: false,
             opening: 1.0,
             pump_reversed: false,
+            thermal: None,
             reading: None,
         }
     }
@@ -225,6 +432,16 @@ mod tests {
                 opening: 0.5,
                 pump_reversed: true,
             },
+            EquipmentCommand::ConfigureThermal {
+                id: 2,
+                revision: 3,
+                yaw: 0.0,
+                pitch: 0.0,
+                settings: ThermalSettings {
+                    mode: HeatControlMode::OutletTemperature,
+                    ..Default::default()
+                },
+            },
         ] {
             let message = crate::ClientMessage::Equipment(command);
             assert_eq!(
@@ -251,6 +468,88 @@ mod tests {
     }
 
     #[test]
+    fn pipe_faces_and_route_replies_are_bounded_and_roundtrip() {
+        let mut pipe = tank();
+        pipe.kind = EquipmentKind::Pipe;
+        pipe.contents.clear();
+        for a in 0..6 {
+            for b in a + 1..6 {
+                pipe.pipe_ends = Some([a, b]);
+                assert!(pipe.valid());
+            }
+        }
+        for ends in [[0, 0], [2, 1], [0, 6]] {
+            pipe.pipe_ends = Some(ends);
+            assert!(!pipe.valid());
+        }
+        pipe.pipe_ends = Some([0, 1]);
+        pipe.kind = EquipmentKind::Pump;
+        assert!(!pipe.valid());
+        pipe.pipe_ends = None;
+        pipe.kind = EquipmentKind::PipeRack;
+        pipe.axis = 1;
+        assert!(!pipe.valid());
+        pipe.axis = 2;
+        assert!(pipe.valid());
+        let anchor = PipeAnchor {
+            id: 1,
+            revision: 2,
+            port: 0,
+        };
+        let reply = PipeRouteReply {
+            request_id: 1,
+            stage: PipeRouteStage::Started,
+            anchor: Some(anchor),
+            message: "起点已确认".into(),
+        };
+        assert!(reply.valid());
+        let message = crate::ServerMessage::PipeRouteReply(reply.clone());
+        assert_eq!(
+            rmp_serde::from_slice::<crate::ServerMessage>(&rmp_serde::to_vec(&message).unwrap())
+                .unwrap(),
+            message
+        );
+        assert!(!PipeRouteReply {
+            anchor: None,
+            ..reply.clone()
+        }
+        .valid());
+        assert!(!PipeRouteReply {
+            request_id: 0,
+            ..reply.clone()
+        }
+        .valid());
+        assert!(!PipeRouteReply {
+            message: "x".repeat(257),
+            ..reply
+        }
+        .valid());
+        for command in [
+            EquipmentCommand::BeginPipe {
+                request_id: 1,
+                yaw: 0.0,
+                pitch: 0.0,
+            },
+            EquipmentCommand::LayPipe {
+                request_id: 2,
+                start: anchor,
+                end: PipeAnchor { id: 2, ..anchor },
+                cells: (0..MAX_PIPE_ROUTE).map(|x| [x as i32, 2, 0]).collect(),
+                yaw: 0.0,
+                pitch: 0.0,
+                inventory_revision: 7,
+            },
+            EquipmentCommand::CancelPipe { request_id: 3 },
+        ] {
+            assert_eq!(
+                rmp_serde::from_slice::<EquipmentCommand>(&rmp_serde::to_vec(&command).unwrap())
+                    .unwrap(),
+                command
+            );
+        }
+    }
+
+    #[test]
     fn maximum_equipment_message_fits_transport_frame() {
         let mut devices = Vec::with_capacity(MAX_EQUIPMENT);
         for i in 0..MAX_EQUIPMENT {
@@ -264,6 +563,11 @@ mod tests {
                 })
                 .collect();
             device.internal_energy_j = 1e18;
+            device.kind = EquipmentKind::HeatExchanger;
+            device.thermal = Some(ThermalSettings {
+                mode: HeatControlMode::OutletTemperature,
+                ..Default::default()
+            });
             device.reading = Some(EquipmentReading {
                 temperature_k: Some(1e6),
                 pressure_pa: Some(1e12),
@@ -271,6 +575,18 @@ mod tests {
                 capacity_m3: 1e9,
                 flow_m3_s: 1e9,
                 status: "x".repeat(96),
+                thermal: Some(ThermalReading {
+                    vapor_fraction: Some(0.5),
+                    liquid_moles: [1e12; 2],
+                    vapor_moles: [1e12; 2],
+                    heat_w: 1e15,
+                    inlet_temperature_k: [Some(1e6); 2],
+                    outlet_temperature_k: [Some(1e6); 2],
+                    flow_m3_s: [1e9; 2],
+                    quality: ReadingQuality::Unavailable,
+                    control_state: ControlState::Regulating,
+                    sampled_at_tick: i64::MAX as u64,
+                }),
             });
             assert!(device.valid());
             devices.push(device);

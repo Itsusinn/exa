@@ -15,6 +15,9 @@ impl VoxelWorld {
             (PIPE_ITEM, 16),
             (PUMP_ITEM, 2),
             (VALVE_ITEM, 2),
+            (protocol::VESSEL_ITEM, 4),
+            (protocol::HEAT_EXCHANGER_ITEM, 1),
+            (protocol::PIPE_RACK_ITEM, 8),
         ] {
             anyhow::ensure!(
                 insert(
@@ -33,6 +36,15 @@ impl VoxelWorld {
     }
 
     pub fn equipment_command(&mut self, player: u32, command: EquipmentCommand) {
+        if matches!(
+            command,
+            EquipmentCommand::BeginPipe { .. }
+                | EquipmentCommand::LayPipe { .. }
+                | EquipmentCommand::CancelPipe { .. }
+        ) {
+            self.pipe_command(player, command);
+            return;
+        }
         let result = self.apply_equipment_command(player, command);
         if let Some(p) = self.players.get_mut(&player) {
             p.container_error = result.err().map_or_else(String::new, |e| e.to_string());
@@ -40,6 +52,16 @@ impl VoxelWorld {
     }
 
     fn apply_equipment_command(&mut self, player: u32, command: EquipmentCommand) -> Result<()> {
+        if let EquipmentCommand::ConfigureThermal {
+            id,
+            revision,
+            yaw,
+            pitch,
+            ref settings,
+        } = command
+        {
+            return self.configure_thermal(player, id, revision, yaw, pitch, settings.clone());
+        }
         if let EquipmentCommand::Configure {
             id,
             revision,
@@ -111,6 +133,9 @@ impl VoxelWorld {
                     enabled: false,
                     opening: 1.0,
                     pump_reversed: false,
+                    pipe_ends: None,
+                    thermal: (kind == EquipmentKind::HeatExchanger)
+                        .then(protocol::ThermalSettings::default),
                     reading: None,
                 };
                 anyhow::ensure!(equipment.valid(), "设备方向或位置无效。");
@@ -120,9 +145,8 @@ impl VoxelWorld {
                     .context("设备标识已耗尽。")?;
                 let cells = occupied_cells(&equipment);
                 anyhow::ensure!(
-                    cells.iter().all(
-                        |&cell| self.terrain.get(cell) == AIR && !self.equipment_occupies(cell)
-                    ),
+                    cells.iter().all(|&cell| self.terrain.get(cell) == AIR)
+                        && !self.equipment_conflicts(&equipment),
                     "设备占用范围与地形、其他设备或未加载区块冲突。"
                 );
                 anyhow::ensure!(
@@ -170,6 +194,13 @@ impl VoxelWorld {
                 anyhow::ensure!(equipment.revision == revision, "设备已变化，请重试。");
                 anyhow::ensure!(equipment.is_empty(), "设备中仍有物料，不能拆除。");
                 anyhow::ensure!(
+                    equipment.kind != EquipmentKind::PipeRack
+                        || !self.terrain.equipment.values().any(|above| {
+                            above.origin == equipment.origin && above.kind == EquipmentKind::Pipe
+                        }),
+                    "请先拆除管架承托的管道。"
+                );
+                anyhow::ensure!(
                     insert(
                         &mut bag.slots,
                         &InventoryEntry {
@@ -181,7 +212,12 @@ impl VoxelWorld {
                 );
                 (None, Some(id))
             }
-            EquipmentCommand::Configure { .. } => unreachable!(),
+            EquipmentCommand::Configure { .. } | EquipmentCommand::ConfigureThermal { .. } => {
+                unreachable!()
+            }
+            EquipmentCommand::BeginPipe { .. }
+            | EquipmentCommand::LayPipe { .. }
+            | EquipmentCommand::CancelPipe { .. } => unreachable!(),
         };
         bag.revision = inventory::next_revision(bag.revision)?;
         // One authority transaction: a failure above changes neither inventory nor world facts.
@@ -245,12 +281,120 @@ impl VoxelWorld {
         &self.industry_ledger
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn configure_thermal(
+        &mut self,
+        player: u32,
+        id: u64,
+        expected: u64,
+        yaw: f32,
+        pitch: f32,
+        settings: protocol::ThermalSettings,
+    ) -> Result<()> {
+        let p = self.players.get(&player).context("玩家尚未连接。")?;
+        anyhow::ensure!(
+            p.hp > 0 && p.open_container.is_none() && self.tick >= p.edit_after,
+            "当前无法操作设备。"
+        );
+        anyhow::ensure!(
+            target(&self.terrain, p.body.position, yaw, pitch)
+                .is_some_and(|hit| hit.equipment == Some(id)),
+            "设备太远或被遮挡。"
+        );
+        let old = self.terrain.equipment.get(&id).context("设备不存在。")?;
+        anyhow::ensure!(old.revision == expected, "设备已变化，请重试。");
+        anyhow::ensure!(
+            old.kind == EquipmentKind::HeatExchanger && settings.valid(),
+            "无效换热设置。"
+        );
+        let revision = inventory::next_revision(self.industry_revision)?;
+        let mut changed = old.clone();
+        changed.thermal = Some(settings);
+        changed.reading = None;
+        changed.revision = revision;
+        self.terrain.equipment.insert(id, changed);
+        self.industry_revision = revision;
+        self.players.get_mut(&player).unwrap().edit_after = self.tick + 6;
+        Ok(())
+    }
+
+    pub(super) fn exchange_thermal(
+        &mut self,
+        player: u32,
+        id: u64,
+        charge: Option<([f64; 2], f64)>,
+        heat: Option<f64>,
+    ) -> Result<()> {
+        let p = self.players.get(&player).context("玩家尚未连接。")?;
+        anyhow::ensure!(p.hp > 0 && p.open_container.is_none(), "当前无法操作设备。");
+        anyhow::ensure!(
+            target(&self.terrain, p.body.position, p.yaw, p.pitch)
+                .is_some_and(|hit| hit.equipment == Some(id)),
+            "请在近处瞄准密闭容器。"
+        );
+        let mut changed = self
+            .terrain
+            .equipment
+            .get(&id)
+            .context("设备不存在。")?
+            .clone();
+        anyhow::ensure!(
+            changed.kind == EquipmentKind::Vessel,
+            "此指令需要密闭容器。"
+        );
+        let mut ledger = self.industry_ledger.clone();
+        if let Some((amounts, t)) = charge {
+            let energy =
+                crate::process::charge(&mut changed, amounts, t).map_err(anyhow::Error::msg)?;
+            for (total, n) in ledger.hydro_injected_moles.iter_mut().zip(amounts) {
+                *total += n;
+            }
+            ledger.hydro_injected_energy_j += energy;
+        } else if let Some(j) = heat {
+            crate::process::heat(&mut changed, j).map_err(anyhow::Error::msg)?;
+            if j >= 0.0 {
+                ledger.heat_added_j += j;
+            } else {
+                ledger.heat_removed_j -= j;
+            }
+        } else {
+            let amounts = crate::thermo::amounts_from_materials(&changed.contents)
+                .map_err(anyhow::Error::msg)?;
+            for (total, n) in ledger.hydro_drained_moles.iter_mut().zip(amounts) {
+                *total += n;
+            }
+            ledger.hydro_drained_energy_j += crate::process::stored_energy_j(&changed);
+            changed.contents.clear();
+            changed.internal_energy_j = 0.0;
+        }
+        anyhow::ensure!(
+            ledger.valid() && changed.valid(),
+            "物料或能量交换超出范围。"
+        );
+        let revision = inventory::next_revision(self.industry_revision)?;
+        changed.revision = revision;
+        changed.reading = None;
+        self.terrain.equipment.insert(id, changed);
+        self.industry_revision = revision;
+        self.industry_ledger = ledger;
+        Ok(())
+    }
+
     pub(super) fn exchange_water(
         &mut self,
         player: u32,
         id: u64,
         fill: Option<(f64, f64)>,
     ) -> Result<()> {
+        if fill.is_none()
+            && self
+                .terrain
+                .equipment
+                .get(&id)
+                .is_some_and(|e| e.kind == EquipmentKind::Vessel)
+        {
+            return self.exchange_thermal(player, id, None, None);
+        }
         let p = self.players.get(&player).context("玩家尚未连接。")?;
         anyhow::ensure!(p.hp > 0 && p.open_container.is_none(), "当前无法操作设备。");
         anyhow::ensure!(
@@ -328,9 +472,11 @@ impl VoxelWorld {
                     || device.kind != old.kind
                     || device.origin != old.origin
                     || device.axis != old.axis
+                    || device.pipe_ends != old.pipe_ends
                     || device.enabled != old.enabled
                     || device.opening != old.opening
                     || device.pump_reversed != old.pump_reversed
+                    || device.thermal != old.thermal
                 {
                     return Err("求解结果改变设备身份或设置。".into());
                 }
@@ -375,7 +521,31 @@ impl VoxelWorld {
             Ok((step, ledger))
         });
         match outcome {
-            Ok((step, ledger)) => {
+            Ok((mut step, ledger)) => {
+                for d in &mut step.devices {
+                    if let Some(t) = d.reading.as_mut().and_then(|r| r.thermal.as_mut()) {
+                        // Identical observations retain their timestamp, avoiding idle broadcasts.
+                        if let Some(old) = self
+                            .terrain
+                            .equipment
+                            .get(&d.id)
+                            .and_then(|e| e.reading.as_ref())
+                            .and_then(|r| r.thermal.as_ref())
+                        {
+                            t.sampled_at_tick = old.sampled_at_tick;
+                        }
+                        if self
+                            .terrain
+                            .equipment
+                            .get(&d.id)
+                            .and_then(|e| e.reading.as_ref())
+                            .and_then(|r| r.thermal.as_ref())
+                            != Some(t)
+                        {
+                            t.sampled_at_tick = self.tick;
+                        }
+                    }
+                }
                 if step.pump_work_j == 0.0
                     && step
                         .devices
@@ -395,6 +565,7 @@ impl VoxelWorld {
                     capacity_m3: 0.0,
                     flow_m3_s: 0.0,
                     status: bounded_status(&error),
+                    thermal: None,
                 };
                 if self
                     .terrain
@@ -419,8 +590,16 @@ impl VoxelWorld {
             .values()
             .any(|e| occupied_cells(e).contains(&cell))
     }
+    pub(super) fn equipment_conflicts(&self, proposed: &EquipmentSnapshot) -> bool {
+        let cells = occupied_cells(proposed);
+        self.terrain.equipment.values().any(|old| {
+            !game_simulation::equipment::rack_compatible(old, proposed)
+                && occupied_cells(old).iter().any(|cell| cells.contains(cell))
+        })
+    }
 
     pub(super) fn broadcast_equipment(&mut self) {
+        self.expire_pipe_starts();
         let mut slow = Vec::new();
         for (&id, p) in &mut self.players {
             if p.industry_revision == Some(self.industry_revision)
@@ -484,6 +663,10 @@ impl VoxelWorld {
             .join(format!("{generation}.rkyv"));
         let archive = if version == 8 {
             crate::industry_data::read_legacy(&archive_path)?
+        } else if version == 9 {
+            crate::industry_data::read_v2(&archive_path)?
+        } else if version == 10 {
+            crate::industry_data::read_v3(&archive_path)?
         } else {
             crate::industry_data::read(&archive_path)?
         };
@@ -642,6 +825,173 @@ mod tests {
     }
 
     #[test]
+    fn version_nine_migrates_exact_water_facts_and_ledger_with_complete_backup() {
+        let (mut w, _rx) = world();
+        place_tank(&mut w);
+        crate::process::fill_water(w.terrain.equipment.get_mut(&1).unwrap(), 2345.0, 303.15)
+            .unwrap();
+        w.industry_ledger.injected_moles = 456.0;
+        w.industry_ledger.pump_work_j = 123.0;
+        let expected = w.terrain.equipment.clone();
+        let ledger = w.industry_ledger.clone();
+        let dir = directory();
+        let path = dir.path().join("world3d.bin");
+        w.save(&path).unwrap();
+        let mut manifest: Save =
+            rmp_serde::from_slice(&std::fs::read(&path).unwrap()[8..]).unwrap();
+        manifest.version = 9;
+        let ip = path.with_extension("industry").join(format!(
+            "{}.rkyv",
+            manifest.industry_archive.as_ref().unwrap()
+        ));
+        let archive = crate::industry_data::read(&ip).unwrap();
+        std::fs::remove_file(&ip).unwrap();
+        crate::industry_data::write_v2_fixture(&ip, &archive).unwrap();
+        let old_archive = std::fs::read(&ip).unwrap();
+        let mut old = b"DNG3D001".to_vec();
+        old.extend(rmp_serde::to_vec(&manifest).unwrap());
+        std::fs::write(&path, &old).unwrap();
+        let restored = VoxelWorld::load(&path).unwrap();
+        assert_eq!(restored.terrain.equipment, expected);
+        assert_eq!(restored.industry_ledger, ledger);
+        assert_eq!(std::fs::read(path.with_extension("v9.bak")).unwrap(), old);
+        assert_eq!(
+            std::fs::read(
+                dir.path()
+                    .join("world3d.v9.bak.industry")
+                    .join(ip.file_name().unwrap())
+            )
+            .unwrap(),
+            old_archive
+        );
+        restored.save(&path).unwrap();
+        let current: Save = rmp_serde::from_slice(&std::fs::read(&path).unwrap()[8..]).unwrap();
+        assert_eq!(current.version, 11);
+        assert_eq!(VoxelWorld::load(&path).unwrap().terrain.equipment, expected);
+    }
+
+    #[test]
+    fn sealed_exchange_rejects_stale_worker_and_persists_signed_energy_ledger() {
+        let (mut w, _rx) = world();
+        place_tank(&mut w);
+        w.terrain.equipment.get_mut(&1).unwrap().kind = EquipmentKind::Vessel;
+        let (yaw, pitch) = aim(&w, [0.0, 82.4, 16.0]);
+        let p = w.players.get_mut(&1).unwrap();
+        p.yaw = yaw;
+        p.pitch = pitch;
+        w.exchange_thermal(1, 1, Some(([1000.0, 1000.0], 320.0)), None)
+            .unwrap();
+        assert_eq!(w.industry_ledger.hydro_injected_moles, [1000.0, 1000.0]);
+        let (revision, input) = w.industry_input().unwrap();
+        let before = w.terrain.equipment[&1].clone();
+        let ledger = w.industry_ledger.clone();
+        assert!(w
+            .exchange_thermal(1, 1, Some(([1.0, 1.0], 320.0)), None)
+            .is_err());
+        assert!(w.exchange_thermal(1, 1, None, Some(1e15)).is_err());
+        assert_eq!(w.terrain.equipment[&1], before);
+        assert_eq!(w.industry_ledger, ledger);
+        w.exchange_thermal(1, 1, None, Some(1000.0)).unwrap();
+        assert!(!w.apply_industry_result(revision, crate::process::solve(&input, 0.2)));
+        assert_eq!(w.industry_ledger.heat_added_j, 1000.0);
+        let dir = directory();
+        let path = dir.path().join("world3d.bin");
+        w.save(&path).unwrap();
+        let restored = VoxelWorld::load(&path).unwrap();
+        assert_eq!(restored.industry_ledger, w.industry_ledger);
+        assert_eq!(restored.terrain.equipment, w.terrain.equipment);
+        w.exchange_water(1, 1, None).unwrap();
+        assert!(w.terrain.equipment[&1].is_empty());
+        let ledger = w.industry_ledger();
+        assert_eq!(ledger.hydro_injected_moles, ledger.hydro_drained_moles);
+        assert!(
+            (ledger.hydro_injected_energy_j + ledger.heat_added_j - ledger.hydro_drained_energy_j)
+                .abs()
+                < 1e-7
+        );
+    }
+
+    #[test]
+    fn version_ten_migration_preserves_thermal_facts_and_all_archive_backups() {
+        let (mut w, _) = world();
+        place_tank(&mut w);
+        crate::process::fill_water(w.terrain.equipment.get_mut(&1).unwrap(), 2000.0, 300.0)
+            .unwrap();
+        let mut vessel = w.terrain.equipment[&1].clone();
+        vessel.id = 2;
+        vessel.origin = [4, 81, 15];
+        vessel.kind = EquipmentKind::Vessel;
+        vessel.contents.clear();
+        vessel.internal_energy_j = 0.0;
+        let energy = crate::process::charge(&mut vessel, [1000.0, 1000.0], 320.0).unwrap();
+        w.terrain.equipment.insert(2, vessel);
+        w.next_equipment_id = 3;
+        w.industry_ledger.hydro_injected_moles = [1000.0, 1000.0];
+        w.industry_ledger.hydro_injected_energy_j = energy;
+        w.industry_ledger.heat_added_j = 123.0;
+        let expected = w.terrain.equipment.clone();
+        let ledger = w.industry_ledger.clone();
+        let dir = directory();
+        let path = dir.path().join("world3d.bin");
+        w.save(&path).unwrap();
+        let mut saved: Save = rmp_serde::from_slice(&std::fs::read(&path).unwrap()[8..]).unwrap();
+        saved.version = 10;
+        let ip = path
+            .with_extension("industry")
+            .join(format!("{}.rkyv", saved.industry_archive.as_ref().unwrap()));
+        let archive = crate::industry_data::read(&ip).unwrap();
+        std::fs::remove_file(&ip).unwrap();
+        crate::industry_data::write_v3_fixture(&ip, &archive).unwrap();
+        let mut bytes = b"DNG3D001".to_vec();
+        bytes.extend(rmp_serde::to_vec(&saved).unwrap());
+        std::fs::write(&path, &bytes).unwrap();
+        let restored = VoxelWorld::load(&path).unwrap();
+        assert_eq!(restored.terrain.equipment, expected);
+        assert_eq!(restored.industry_ledger, ledger);
+        assert_eq!(
+            std::fs::read(path.with_extension("v10.bak")).unwrap(),
+            bytes
+        );
+        for extension in ["chunks", "players", "entities", "industry"] {
+            let original = path.with_extension(extension);
+            let backup = dir.path().join(format!("world3d.v10.bak.{extension}"));
+            for entry in std::fs::read_dir(original).unwrap() {
+                let entry = entry.unwrap();
+                assert_eq!(
+                    std::fs::read(entry.path()).unwrap(),
+                    std::fs::read(backup.join(entry.file_name())).unwrap()
+                );
+            }
+        }
+        restored.save(&path).unwrap();
+        let final_save: Save = rmp_serde::from_slice(&std::fs::read(&path).unwrap()[8..]).unwrap();
+        assert_eq!(final_save.version, 11);
+        assert_eq!(VoxelWorld::load(&path).unwrap().industry_ledger, ledger);
+    }
+
+    #[test]
+    fn unsupported_property_revision_refuses_load_without_changing_saved_facts() {
+        let (mut w, _rx) = world();
+        place_tank(&mut w);
+        let dir = directory();
+        let path = dir.path().join("world3d.bin");
+        w.save(&path).unwrap();
+        let manifest_bytes = std::fs::read(&path).unwrap();
+        let manifest: Save = rmp_serde::from_slice(&manifest_bytes[8..]).unwrap();
+        let ip = path
+            .with_extension("industry")
+            .join(format!("{}.rkyv", manifest.industry_archive.unwrap()));
+        let mut archive = crate::industry_data::read(&ip).unwrap();
+        archive.thermo_revision = "future-incompatible-model".into();
+        std::fs::remove_file(&ip).unwrap();
+        crate::industry_data::write_new(&ip, &archive).unwrap();
+        let archived_bytes = std::fs::read(&ip).unwrap();
+        assert!(VoxelWorld::load(&path).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), manifest_bytes);
+        assert_eq!(std::fs::read(&ip).unwrap(), archived_bytes);
+    }
+
+    #[test]
     fn water_exchange_ledger_and_stale_batches_are_atomic() {
         let (mut w, _rx) = world();
         place_tank(&mut w);
@@ -781,6 +1131,32 @@ mod tests {
         place_tank(&mut w);
         assert!(w.terrain.equipment.contains_key(&2));
         assert!(!w.terrain.equipment.contains_key(&1));
+    }
+    #[test]
+    fn worker_cannot_change_explicit_pipe_geometry_during_a_process_commit() {
+        let (mut w, _rx) = world();
+        place_tank(&mut w);
+        let d = w.terrain.equipment.get_mut(&1).unwrap();
+        d.kind = EquipmentKind::Pipe;
+        let ledger = w.industry_ledger.clone();
+        let (revision, mut ds) = w.industry_input().unwrap();
+        ds[0].pipe_ends = Some([0, 4]);
+        assert!(ds[0].valid());
+        assert!(w.apply_industry_result(
+            revision,
+            Ok(crate::process::FlowStep {
+                devices: ds,
+                pump_work_j: 0.0
+            })
+        ));
+        assert_eq!(w.terrain.equipment[&1].pipe_ends, None);
+        assert_eq!(w.industry_ledger, ledger);
+        assert!(w.terrain.equipment[&1]
+            .reading
+            .as_ref()
+            .unwrap()
+            .status
+            .contains("暂停"));
     }
 
     #[test]

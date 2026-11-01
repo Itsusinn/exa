@@ -18,6 +18,9 @@ impl CollisionBox {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct EquipmentPort {
+    /// Stable within a device; paired ports share a circuit, never material.
+    pub id: u8,
+    pub circuit: u8,
     pub position: [f32; 3],
     pub normal: [i32; 3],
 }
@@ -64,6 +67,36 @@ pub fn occupied_cells(device: &EquipmentSnapshot) -> Vec<[i32; 3]> {
         .collect()
 }
 
+/// Face order is part of the protocol: -X, +X, -Y, +Y, -Z, +Z.
+pub fn face_normal(face: u8) -> Option<[i32; 3]> {
+    if face >= 6 {
+        return None;
+    }
+    let mut normal = [0; 3];
+    normal[usize::from(face / 2)] = if face.is_multiple_of(2) { -1 } else { 1 };
+    Some(normal)
+}
+
+/// A pipe's positive reading is from its first face to its second face.
+/// Old pipes retain their axis-aligned pair when no explicit faces were saved.
+pub fn pipe_faces(device: &EquipmentSnapshot) -> [u8; 2] {
+    device
+        .pipe_ends
+        .filter(|ends| ends[0] < ends[1] && ends[1] < 6)
+        .unwrap_or([device.axis.min(2) * 2, device.axis.min(2) * 2 + 1])
+}
+
+/// One independent rack frame may share its cell with one horizontal pipe.
+/// The frame ends at the lower tangent of the pipe (local y = 0.375).
+pub fn rack_compatible(a: &EquipmentSnapshot, b: &EquipmentSnapshot) -> bool {
+    let pipe = match (a.kind, b.kind) {
+        (EquipmentKind::PipeRack, EquipmentKind::Pipe) => b,
+        (EquipmentKind::Pipe, EquipmentKind::PipeRack) => a,
+        _ => return false,
+    };
+    a.origin == b.origin && pipe_faces(pipe).iter().all(|face| *face != 2 && *face != 3)
+}
+
 /// Conservative circular tank envelope made of 32 narrow strips, plus its nozzles.
 /// The same geometry is used for picking, server movement and client replay.
 pub fn collision_boxes(device: &EquipmentSnapshot) -> Vec<CollisionBox> {
@@ -73,7 +106,21 @@ pub fn collision_boxes(device: &EquipmentSnapshot) -> Vec<CollisionBox> {
         max: std::array::from_fn(|i| origin[i] + max[i]),
     };
     match device.kind {
-        EquipmentKind::Pipe | EquipmentKind::Pump | EquipmentKind::Valve => {
+        EquipmentKind::Pipe => pipe_faces(device)
+            .into_iter()
+            .map(|face| {
+                let mut min = [0.375; 3];
+                let mut max = [0.625; 3];
+                let axis = usize::from(face / 2);
+                if face % 2 == 0 {
+                    min[axis] = 0.0;
+                } else {
+                    max[axis] = 1.0;
+                }
+                translated(min, max)
+            })
+            .collect(),
+        EquipmentKind::Pump | EquipmentKind::Valve => {
             let mut min = [0.375; 3];
             let mut max = [0.625; 3];
             let axis = usize::from(device.axis.min(2));
@@ -85,17 +132,41 @@ pub fn collision_boxes(device: &EquipmentSnapshot) -> Vec<CollisionBox> {
             }
             shapes
         }
-        EquipmentKind::Tank => {
+        EquipmentKind::PipeRack => {
+            let shapes = [
+                ([0.05, 0.0, 0.4], [0.15, 0.25, 0.6]),
+                ([0.85, 0.0, 0.4], [0.95, 0.25, 0.6]),
+                ([0.05, 0.25, 0.375], [0.95, 0.375, 0.625]),
+            ];
+            shapes
+                .into_iter()
+                .map(|(mut min, mut max)| {
+                    if device.axis == 2 {
+                        min.swap(0, 2);
+                        max.swap(0, 2);
+                    }
+                    translated(min, max)
+                })
+                .collect()
+        }
+        EquipmentKind::Tank | EquipmentKind::Vessel => {
             let mut boxes = Vec::with_capacity(34);
+            let shell_radius = if device.kind == EquipmentKind::Vessel {
+                0.925f32
+            } else {
+                0.9
+            };
             for band in 0..32 {
-                let z0 = 0.1 + band as f32 * (1.8 / 32.0);
-                let z1 = z0 + 1.8 / 32.0;
+                let z0 = 1.0 - shell_radius + band as f32 * (2.0 * shell_radius / 32.0);
+                let z1 = z0 + 2.0 * shell_radius / 32.0;
                 let nearest = if z0 <= 1.0 && z1 >= 1.0 {
                     0.0
                 } else {
                     (z0 - 1.0).abs().min((z1 - 1.0).abs())
                 };
-                let radius = (0.81 - nearest * nearest).max(0.0).sqrt();
+                let radius = (shell_radius * shell_radius - nearest * nearest)
+                    .max(0.0)
+                    .sqrt();
                 boxes.push(translated(
                     [1.0 - radius, 0.0, z0],
                     [1.0 + radius, 2.85, z1],
@@ -103,27 +174,73 @@ pub fn collision_boxes(device: &EquipmentSnapshot) -> Vec<CollisionBox> {
             }
             boxes.push(translated([0.0, 0.375, 0.375], [0.4, 0.625, 0.625]));
             boxes.push(translated([1.6, 0.375, 0.375], [2.0, 0.625, 0.625]));
+            if device.kind == EquipmentKind::Vessel {
+                boxes.push(translated([0.78, 2.85, 0.78], [1.22, 3.0, 1.22]));
+            }
             boxes
+        }
+        EquipmentKind::HeatExchanger => {
+            let mut shapes = vec![translated([0.2, 0.15, 0.2], [1.8, 0.85, 2.8])];
+            for z in [0.5, 2.5] {
+                shapes.push(translated([0.0, 0.375, z - 0.125], [2.0, 0.625, z + 0.125]));
+            }
+            shapes
         }
     }
 }
 
 pub fn ports(device: &EquipmentSnapshot) -> Vec<EquipmentPort> {
     let origin = device.origin.map(|v| v as f32);
-    let axis = if device.kind == EquipmentKind::Tank {
+    if device.kind == EquipmentKind::PipeRack {
+        return vec![];
+    }
+    if device.kind == EquipmentKind::Pipe {
+        return pipe_faces(device)
+            .into_iter()
+            .enumerate()
+            .map(|(id, face)| {
+                let normal = face_normal(face).expect("pipe faces are bounded");
+                let position = std::array::from_fn(|i| origin[i] + 0.5 + normal[i] as f32 * 0.5);
+                EquipmentPort {
+                    id: id as u8,
+                    circuit: 0,
+                    position,
+                    normal,
+                }
+            })
+            .collect();
+    }
+    let axis = if matches!(
+        device.kind,
+        EquipmentKind::Tank | EquipmentKind::Vessel | EquipmentKind::HeatExchanger
+    ) {
         0
     } else {
         device.axis.min(2) as usize
     };
     let length = device.kind.size()[axis] as f32;
-    [-1, 1]
-        .into_iter()
-        .map(|sign| {
-            let mut position = origin.map(|v| v + 0.5);
-            position[axis] = origin[axis] + if sign < 0 { 0.0 } else { length };
-            let mut normal = [0; 3];
-            normal[axis] = sign;
-            EquipmentPort { position, normal }
+    let circuits = if device.kind == EquipmentKind::HeatExchanger {
+        2
+    } else {
+        1
+    };
+    (0..circuits)
+        .flat_map(|circuit| {
+            [-1, 1].into_iter().map(move |sign| {
+                let mut position = origin.map(|v| v + 0.5);
+                if circuits == 2 {
+                    position[2] += f32::from(circuit) * 2.0;
+                }
+                position[axis] = origin[axis] + if sign < 0 { 0.0 } else { length };
+                let mut normal = [0; 3];
+                normal[axis] = sign;
+                EquipmentPort {
+                    id: circuit * 2 + u8::from(sign > 0),
+                    circuit,
+                    position,
+                    normal,
+                }
+            })
         })
         .collect()
 }
@@ -271,6 +388,8 @@ mod tests {
             enabled: false,
             opening: 1.0,
             pump_reversed: false,
+            pipe_ends: None,
+            thermal: (kind == EquipmentKind::HeatExchanger).then(Default::default),
             reading: None,
         }
     }
@@ -284,6 +403,40 @@ mod tests {
         assert!(!connected(
             ports(&tank)[1],
             ports(&device(EquipmentKind::Pipe, [1, 1, -1], 1))[0]
+        ));
+    }
+    #[test]
+    fn exchanger_ports_keep_two_independent_channels_and_full_footprint() {
+        let exchanger = device(EquipmentKind::HeatExchanger, [-1, 5, -1], 0);
+        assert!(exchanger.valid());
+        assert_eq!(occupied_cells(&exchanger).len(), 6);
+        let p = ports(&exchanger);
+        assert_eq!(p.len(), 4);
+        for circuit in 0..2 {
+            for end in 0..2 {
+                let port = p[circuit * 2 + end];
+                assert_eq!(usize::from(port.id), circuit * 2 + end);
+                assert_eq!(usize::from(port.circuit), circuit);
+                let pipe = device(
+                    EquipmentKind::Pipe,
+                    [if end == 0 { -2 } else { 1 }, 5, -1 + circuit as i32 * 2],
+                    0,
+                );
+                assert!(connected(port, ports(&pipe)[1 - end]));
+                assert!(collision_boxes(&exchanger).iter().any(|bounds| {
+                    let mut inside = port.position;
+                    inside[0] -= port.normal[0] as f32 * 0.01;
+                    bounds.contains(inside)
+                }));
+            }
+        }
+        let vessel = device(EquipmentKind::Vessel, [-4, 5, -1], 0);
+        assert!(vessel.valid());
+        assert_eq!(ports(&vessel).len(), 2);
+        assert_eq!(occupied_cells(&vessel).len(), 12);
+        assert!(connected(
+            ports(&vessel)[1],
+            ports(&device(EquipmentKind::Pipe, [-2, 5, -1], 0))[0]
         ));
     }
     #[test]
@@ -307,11 +460,78 @@ mod tests {
     }
 
     #[test]
+    fn all_twelve_elbows_and_three_straights_expose_only_their_saved_faces() {
+        let mut elbows = 0;
+        let mut straights = 0;
+        for first in 0..6 {
+            for second in first + 1..6 {
+                let mut pipe = device(EquipmentKind::Pipe, [-1, 6, -1], 0);
+                pipe.pipe_ends = Some([first, second]);
+                assert!(pipe.valid());
+                let p = ports(&pipe);
+                assert_eq!(p.len(), 2);
+                for (id, face) in [first, second].into_iter().enumerate() {
+                    let normal = face_normal(face).unwrap();
+                    assert_eq!(p[id].normal, normal);
+                    assert_eq!(usize::from(p[id].id), id);
+                    let mut neighbour = device(
+                        EquipmentKind::Pipe,
+                        std::array::from_fn(|i| pipe.origin[i] + normal[i]),
+                        face / 2,
+                    );
+                    neighbour.id = 2;
+                    assert_eq!(
+                        ports(&neighbour)
+                            .into_iter()
+                            .filter(|other| connected(p[id], *other))
+                            .count(),
+                        1
+                    );
+                }
+                let geometry = collision_boxes(&pipe);
+                assert!(geometry
+                    .iter()
+                    .any(|bounds| bounds.contains([-0.5, 6.5, -0.5])));
+                assert!(!geometry
+                    .iter()
+                    .any(|bounds| bounds.contains([-0.95, 6.05, -0.95])));
+                for unused in (0..6).filter(|face| *face != first && *face != second) {
+                    let normal = face_normal(unused).unwrap();
+                    let neighbour = device(
+                        EquipmentKind::Pipe,
+                        std::array::from_fn(|i| pipe.origin[i] + normal[i]),
+                        unused / 2,
+                    );
+                    assert!(!p.iter().any(|port| ports(&neighbour)
+                        .into_iter()
+                        .any(|other| connected(*port, other))));
+                }
+                if first ^ 1 == second {
+                    straights += 1;
+                } else {
+                    elbows += 1;
+                }
+            }
+        }
+        assert_eq!((elbows, straights), (12, 3));
+    }
+
+    #[test]
     fn placement_keeps_tanks_and_pipes_adjacent_on_all_six_faces() {
-        for base_kind in [EquipmentKind::Tank, EquipmentKind::Pipe] {
+        for base_kind in [
+            EquipmentKind::Tank,
+            EquipmentKind::Pipe,
+            EquipmentKind::Vessel,
+            EquipmentKind::HeatExchanger,
+        ] {
             let base = device(base_kind, [-1, 10, -1], 0);
             let occupied = occupied_cells(&base);
-            for kind in [EquipmentKind::Tank, EquipmentKind::Pipe] {
+            for kind in [
+                EquipmentKind::Tank,
+                EquipmentKind::Pipe,
+                EquipmentKind::Vessel,
+                EquipmentKind::HeatExchanger,
+            ] {
                 for axis in 0..3 {
                     for sign in [-1, 1] {
                         let mut position = base.origin;

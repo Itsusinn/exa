@@ -5,6 +5,14 @@ pub type Model = Client3d;
 use game_simulation::{equipment, grid::Grid, step_in_grid};
 use protocol::*;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PipePlanKey {
+    start: PipeAnchor,
+    end: PipeAnchor,
+    terrain: u64,
+    geometry: u64,
+}
+
 pub struct Session {
     pub model: Client3d,
     pub transport: Option<Box<dyn Transport>>,
@@ -16,6 +24,15 @@ pub struct Session {
     pub demo: bool,
     pub generation: u64,
     pub equipment_axis: u8,
+    pub pipe_mode: bool,
+    pub pipe_start: Option<PipeAnchor>,
+    pub pipe_target: Option<PipeAnchor>,
+    pub pipe_pending: Option<u64>,
+    pub pipe_status: String,
+    pub pipe_plan: Vec<([i32; 3], [u8; 2])>,
+    pub pipe_plan_revision: u64,
+    pipe_request: u64,
+    pipe_plan_key: Option<PipePlanKey>,
     local_server: Option<LocalServer>,
     pub local_error: bool,
     retired_transports: Vec<Box<dyn Transport>>,
@@ -33,6 +50,15 @@ impl Default for Session {
             demo: false,
             generation: 0,
             equipment_axis: 0,
+            pipe_mode: false,
+            pipe_start: None,
+            pipe_target: None,
+            pipe_pending: None,
+            pipe_status: String::new(),
+            pipe_plan: vec![],
+            pipe_plan_revision: 0,
+            pipe_request: 0,
+            pipe_plan_key: None,
             local_server: None,
             local_error: false,
             retired_transports: Vec::new(),
@@ -104,6 +130,8 @@ impl Session {
         self.model = Client3d::default();
         self.demo = false;
         self.equipment_axis = 0;
+        self.clear_pipe_route();
+        self.pipe_request = 0;
         self.generation += 1;
         self.status = if self.local_running() {
             "正在保存并关闭单人世界…"
@@ -171,12 +199,235 @@ impl Session {
             self.model.terrain.equipment.clear();
             self.model.equipment_revision += 1;
             self.generation += 1;
+            self.clear_pipe_route();
             if let Some(server) = &mut self.local_server {
                 self.local_error = true;
                 server.stop();
             }
         }
+        if let Some(reply) = self.model.pipe_reply.take() {
+            self.accept_pipe_reply(reply);
+        }
     }
+    fn clear_pipe_route(&mut self) {
+        self.pipe_mode = false;
+        self.pipe_start = None;
+        self.pipe_target = None;
+        self.pipe_pending = None;
+        self.pipe_plan.clear();
+        self.pipe_plan_key = None;
+        self.pipe_status.clear();
+        self.pipe_plan_revision = self.pipe_plan_revision.wrapping_add(1);
+    }
+
+    fn send_pipe(&mut self, make: impl FnOnce(u64) -> EquipmentCommand) -> bool {
+        let Some(id) = self
+            .pipe_request
+            .checked_add(1)
+            .filter(|id| *id <= i64::MAX as u64)
+        else {
+            self.pipe_status = "铺管请求编号已用尽，请重连。".into();
+            return false;
+        };
+        self.pipe_request = id;
+        let Some(transport) = &self.transport else {
+            return false;
+        };
+        match transport.send(ClientMessage::Equipment(make(id))) {
+            Ok(()) => {
+                self.pipe_pending = Some(id);
+                true
+            }
+            Err(error) => {
+                self.pipe_status = error;
+                false
+            }
+        }
+    }
+
+    pub fn toggle_pipe_mode(&mut self) {
+        if self.pipe_mode {
+            self.cancel_pipe_route();
+            return;
+        }
+        if !self.model.ready || self.demo || self.selected_equipment() != Some(EquipmentKind::Pipe)
+        {
+            self.pipe_status = "请先选择快捷栏中的管道。".into();
+            return;
+        }
+        self.clear_pipe_route();
+        self.pipe_mode = true;
+        self.pipe_status = "铺管：右键选择空闲接口；Esc / P 取消。".into();
+    }
+
+    pub fn cancel_pipe_route(&mut self) {
+        let active = self.pipe_mode || self.pipe_start.is_some() || self.pipe_pending.is_some();
+        self.clear_pipe_route();
+        if active && self.model.ready {
+            // A newer cancellation supersedes a queued begin/lay response. Never
+            // retry a timed-out lay automatically: the authority may have committed it.
+            self.send_pipe(|request_id| EquipmentCommand::CancelPipe { request_id });
+        }
+    }
+
+    fn accept_pipe_reply(&mut self, reply: PipeRouteReply) {
+        if reply.stage == PipeRouteStage::Cancelled
+            && reply.request_id == self.pipe_request
+            && (self.pipe_pending == Some(reply.request_id) || self.pipe_start.is_some())
+        {
+            self.clear_pipe_route();
+            self.pipe_status = reply.message;
+            return;
+        }
+        if self.pipe_pending != Some(reply.request_id) {
+            return;
+        }
+        self.pipe_pending = None;
+        self.pipe_status = reply.message;
+        match reply.stage {
+            PipeRouteStage::Started if self.pipe_mode => {
+                self.pipe_start = reply.anchor;
+                self.pipe_plan_key = None;
+            }
+            PipeRouteStage::Laid => {
+                self.pipe_start = None;
+                self.pipe_target = None;
+                self.pipe_plan.clear();
+                self.pipe_plan_key = None;
+                self.pipe_plan_revision = self.pipe_plan_revision.wrapping_add(1);
+            }
+            PipeRouteStage::Rejected => {
+                self.pipe_start = reply.anchor;
+                self.pipe_target = None;
+                self.pipe_plan.clear();
+                self.pipe_plan_key = None;
+                self.pipe_plan_revision = self.pipe_plan_revision.wrapping_add(1);
+            }
+            PipeRouteStage::Cancelled => {
+                self.pipe_start = None;
+            }
+            _ => {}
+        }
+    }
+
+    pub fn update_pipe_route(&mut self, yaw: f32, pitch: f32) {
+        if !self.pipe_mode {
+            return;
+        }
+        if !self.model.ready
+            || self.model.hp <= 0
+            || self.selected_equipment() != Some(EquipmentKind::Pipe)
+        {
+            self.cancel_pipe_route();
+            return;
+        }
+        if let Some(start) = self.pipe_start {
+            let too_far = self
+                .model
+                .terrain
+                .equipment
+                .get(&start.id)
+                .is_none_or(|device| {
+                    equipment::ports(device)
+                        .get(usize::from(start.port))
+                        .is_none_or(|port| {
+                            game_simulation::distance(port.position, self.model.body.position)
+                                > PIPE_START_RANGE
+                        })
+                });
+            if too_far {
+                self.cancel_pipe_route();
+                return;
+            }
+        }
+        if self.pipe_pending.is_some() {
+            return;
+        }
+        let target = game_simulation::pipe_route::resolve_anchor(
+            &self.model.terrain,
+            self.model.body.position,
+            yaw,
+            pitch,
+        );
+        self.pipe_target = target.as_ref().ok().copied();
+        let Some(start) = self.pipe_start else {
+            return;
+        };
+        let end = match target {
+            Ok(anchor) => anchor,
+            Err(error) => {
+                if !self.pipe_plan.is_empty() {
+                    self.pipe_plan_revision = self.pipe_plan_revision.wrapping_add(1);
+                }
+                self.pipe_plan.clear();
+                self.pipe_plan_key = None;
+                self.pipe_status = error;
+                return;
+            }
+        };
+        let key = PipePlanKey {
+            start,
+            end,
+            terrain: self.model.revision,
+            geometry: self.model.equipment_geometry_revision,
+        };
+        if self.pipe_plan_key.as_ref() == Some(&key) {
+            return;
+        }
+        self.pipe_plan_key = Some(key);
+        self.pipe_plan_revision = self.pipe_plan_revision.wrapping_add(1);
+        self.pipe_plan.clear();
+        match game_simulation::pipe_route::plan(&self.model.terrain, start, end).and_then(|cells| {
+            let ends =
+                game_simulation::pipe_route::validate(&self.model.terrain, start, end, &cells)?;
+            Ok(cells.into_iter().zip(ends).collect::<Vec<_>>())
+        }) {
+            Ok(plan) => {
+                self.pipe_status = if plan.is_empty() {
+                    "两个接口已相接，无需新管段。".into()
+                } else {
+                    format!("铺管：{} 段，右键提交；Esc / P 取消。", plan.len())
+                };
+                self.pipe_plan = plan;
+            }
+            Err(error) => self.pipe_status = error,
+        }
+    }
+
+    pub fn click_pipe_route(&mut self, yaw: f32, pitch: f32) {
+        if !self.pipe_mode || self.pipe_pending.is_some() {
+            return;
+        }
+        self.update_pipe_route(yaw, pitch);
+        if let Some(start) = self.pipe_start {
+            let Some(end) = self.pipe_target else {
+                return;
+            };
+            if self.pipe_plan.is_empty() {
+                return;
+            }
+            let cells = self.pipe_plan.iter().map(|(cell, _)| *cell).collect();
+            let inventory_revision = self.model.inventory.revision;
+            if self.send_pipe(|request_id| EquipmentCommand::LayPipe {
+                request_id,
+                start,
+                end,
+                cells,
+                yaw,
+                pitch,
+                inventory_revision,
+            }) {
+                self.pipe_status = "等待服务端确认整条管路… Esc / P 取消草稿。".into();
+            }
+        } else if self.send_pipe(|request_id| EquipmentCommand::BeginPipe {
+            request_id,
+            yaw,
+            pitch,
+        }) {
+            self.pipe_status = "等待服务端确认起点… Esc / P 取消。".into();
+        }
+    }
+
     pub fn input(&mut self, input: PlayerInput) {
         if self.demo {
             let obstacles: Vec<_> = self
@@ -245,7 +496,19 @@ impl Session {
                         yaw,
                         pitch,
                         kind,
-                        axis: if kind != EquipmentKind::Tank {
+                        axis: if kind == EquipmentKind::PipeRack {
+                            if self.equipment_axis == 2 {
+                                2
+                            } else {
+                                0
+                            }
+                        } else if matches!(
+                            kind,
+                            EquipmentKind::Pipe
+                                | EquipmentKind::Pump
+                                | EquipmentKind::Valve
+                                | EquipmentKind::PipeRack
+                        ) {
                             self.equipment_axis
                         } else {
                             0
@@ -341,7 +604,19 @@ impl Session {
             revision: 0,
             kind,
             origin: equipment::placement_origin(hit, kind),
-            axis: if kind != EquipmentKind::Tank {
+            axis: if kind == EquipmentKind::PipeRack {
+                if self.equipment_axis == 2 {
+                    2
+                } else {
+                    0
+                }
+            } else if matches!(
+                kind,
+                EquipmentKind::Pipe
+                    | EquipmentKind::Pump
+                    | EquipmentKind::Valve
+                    | EquipmentKind::PipeRack
+            ) {
                 self.equipment_axis
             } else {
                 0
@@ -351,6 +626,8 @@ impl Session {
             enabled: false,
             opening: 1.0,
             pump_reversed: false,
+            thermal: (kind == EquipmentKind::HeatExchanger).then(ThermalSettings::default),
+            pipe_ends: None,
             reading: None,
         };
         let cells = equipment::occupied_cells(&device);
@@ -360,6 +637,9 @@ impl Session {
         } else if cells.iter().any(|p| self.model.terrain.get(*p) != AIR) {
             reason = "位置被占用或尚未加载";
         } else if self.model.terrain.equipment.values().any(|other| {
+            if equipment::rack_compatible(&device, other) {
+                return false;
+            }
             equipment::occupied_cells(other)
                 .iter()
                 .any(|p| cells.contains(p))
@@ -480,5 +760,153 @@ impl Session {
             container: None,
             container_error: String::new(),
         }));
+    }
+}
+
+#[cfg(test)]
+mod pipe_tests {
+    use super::*;
+    struct Queue {
+        fail: bool,
+    }
+    impl Transport for Queue {
+        fn send(&self, _: ClientMessage) -> Result<(), String> {
+            if self.fail {
+                Err("queue full".into())
+            } else {
+                Ok(())
+            }
+        }
+        fn poll(&mut self) -> Option<NetworkEvent> {
+            None
+        }
+    }
+    fn anchor() -> PipeAnchor {
+        PipeAnchor {
+            id: 1,
+            revision: 0,
+            port: 0,
+        }
+    }
+    #[test]
+    fn fresh_authority_cancel_clears_an_accepted_start_but_old_cancel_is_ignored() {
+        let mut session = Session {
+            pipe_request: 2,
+            pipe_mode: true,
+            pipe_start: Some(anchor()),
+            ..Default::default()
+        };
+        session.pipe_plan.push(([0, 1, 0], [0, 1]));
+        session.accept_pipe_reply(PipeRouteReply {
+            request_id: 2,
+            stage: PipeRouteStage::Cancelled,
+            anchor: None,
+            message: "expired".into(),
+        });
+        assert!(!session.pipe_mode && session.pipe_start.is_none() && session.pipe_plan.is_empty());
+        assert_eq!(session.pipe_status, "expired");
+        session.pipe_request = 4;
+        session.pipe_pending = Some(4);
+        session.pipe_mode = true;
+        session.pipe_start = Some(anchor());
+        session.accept_pipe_reply(PipeRouteReply {
+            request_id: 2,
+            stage: PipeRouteStage::Cancelled,
+            anchor: None,
+            message: "old".into(),
+        });
+        assert_eq!(session.pipe_pending, Some(4));
+        assert_eq!(session.pipe_start, Some(anchor()));
+        assert!(session.pipe_mode);
+    }
+    #[test]
+    fn rejected_missing_anchor_and_disconnect_clear_route_state() {
+        let mut session = Session {
+            pipe_request: 2,
+            pipe_pending: Some(2),
+            pipe_mode: true,
+            pipe_start: Some(anchor()),
+            ..Default::default()
+        };
+        session.pipe_plan.push(([0, 1, 0], [0, 1]));
+        session.accept_pipe_reply(PipeRouteReply {
+            request_id: 2,
+            stage: PipeRouteStage::Rejected,
+            anchor: None,
+            message: "changed".into(),
+        });
+        assert!(
+            session.pipe_start.is_none()
+                && session.pipe_plan.is_empty()
+                && session.pipe_pending.is_none()
+        );
+        session.pipe_start = Some(anchor());
+        session.disconnect();
+        assert!(
+            !session.pipe_mode && session.pipe_start.is_none() && session.pipe_pending.is_none()
+        );
+        assert_eq!(session.pipe_request, 0);
+    }
+    #[test]
+    fn failed_send_does_not_enter_pending_and_requests_never_wrap() {
+        let mut session = Session {
+            transport: Some(Box::new(Queue { fail: true })),
+            ..Default::default()
+        };
+        assert!(
+            !session.send_pipe(|request_id| EquipmentCommand::BeginPipe {
+                request_id,
+                yaw: 0.0,
+                pitch: 0.0
+            })
+        );
+        assert!(session.pipe_pending.is_none());
+        assert_eq!(session.pipe_request, 1);
+        session.transport = Some(Box::new(Queue { fail: false }));
+        assert!(session.send_pipe(|request_id| EquipmentCommand::BeginPipe {
+            request_id,
+            yaw: 0.0,
+            pitch: 0.0
+        }));
+        assert_eq!(session.pipe_pending, Some(2));
+        session.pipe_pending = None;
+        session.pipe_request = i64::MAX as u64;
+        assert!(!session.send_pipe(|request_id| EquipmentCommand::CancelPipe { request_id }));
+        assert!(session.pipe_pending.is_none());
+    }
+    #[test]
+    fn delayed_cancel_ack_cannot_exit_a_reopened_tool_before_its_next_begin() {
+        let mut session = Session {
+            transport: Some(Box::new(Queue { fail: false })),
+            pipe_mode: true,
+            ..Default::default()
+        };
+        session.model.ready = true;
+        session.model.inventory.slots[0] = Some(InventoryEntry {
+            name: PIPE_ITEM.into(),
+            quantity: 4,
+        });
+        session.cancel_pipe_route();
+        let cancelled = session.pipe_request;
+        assert_eq!(session.pipe_pending, Some(cancelled));
+        session.toggle_pipe_mode();
+        assert!(
+            session.pipe_mode && session.pipe_start.is_none() && session.pipe_pending.is_none()
+        );
+        session.accept_pipe_reply(PipeRouteReply {
+            request_id: cancelled,
+            stage: PipeRouteStage::Cancelled,
+            anchor: None,
+            message: "old cancel".into(),
+        });
+        assert!(
+            session.pipe_mode && session.pipe_start.is_none() && session.pipe_pending.is_none()
+        );
+        assert!(session.send_pipe(|request_id| EquipmentCommand::BeginPipe {
+            request_id,
+            yaw: 0.0,
+            pitch: 0.0
+        }));
+        assert_eq!(session.pipe_pending, Some(cancelled + 1));
     }
 }

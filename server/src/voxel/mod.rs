@@ -4,6 +4,7 @@ mod editing;
 mod industry;
 mod inventory;
 mod persistence;
+mod pipe_laying;
 pub use persistence::lock_world;
 #[cfg(test)]
 mod legacy_fixture;
@@ -27,6 +28,8 @@ struct Player {
     sent_columns: BTreeSet<[i32; 2]>,
     industry_columns: BTreeSet<[i32; 2]>,
     industry_revision: Option<u64>,
+    pipe_start: Option<PipeAnchor>,
+    pipe_reply: Option<PipeRouteReply>,
     uuid: Option<[u8; 16]>,
     name: String,
     body: Body,
@@ -216,6 +219,8 @@ impl VoxelWorld {
                 sent_columns: BTreeSet::new(),
                 industry_columns: BTreeSet::new(),
                 industry_revision: None,
+                pipe_start: None,
+                pipe_reply: None,
                 uuid: None,
                 name: String::new(),
                 body: Body {
@@ -420,6 +425,7 @@ impl VoxelWorld {
             .map(|(&id, _)| id)
             .collect();
         for id in dead {
+            self.cancel_pipe_start(id, "死亡或复活已取消铺管起点。");
             self.players.get_mut(&id).unwrap().open_container = None;
             if let Some(position) = self.spawn_position(id) {
                 let p = self.players.get_mut(&id).unwrap();
@@ -556,7 +562,7 @@ impl VoxelWorld {
         anyhow::ensure!(bytes.starts_with(b"DNG3D001"),"not a 3D save; legacy 2D saves are preserved and require explicit migration. Use a new CDDA_SAVE_PATH");
         let saved: Save = rmp_serde::from_slice(&bytes[8..]).context("decode 3D world")?;
         anyhow::ensure!(
-            matches!(saved.version, 1..=9)
+            matches!(saved.version, 1..=11)
                 && saved.size
                     == if saved.version >= 7 {
                         [0, WORLD_HEIGHT, 0]
@@ -639,7 +645,7 @@ impl VoxelWorld {
                 );
                 world.load_industry_checkpoint(path, &generation, saved.version)?;
             }
-            if saved.version < 9 {
+            if saved.version < 11 {
                 containers::backup_version(path, &bytes, saved.version)?;
             }
             return Ok(world);
@@ -700,7 +706,7 @@ impl VoxelWorld {
         self.write_entity_checkpoint(path, &player_archive)?;
         self.write_industry_checkpoint(path, &player_archive)?;
         let saved = Save {
-            version: 9,
+            version: 11,
             size: [0, WORLD_HEIGHT, 0],
             generated_columns: Some(self.terrain.columns().into_iter().collect()),
             seed: self.world_seed,

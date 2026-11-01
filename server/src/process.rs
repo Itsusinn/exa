@@ -1,8 +1,11 @@
-//! Bounded, single-liquid test loop. Open tanks store water; inline devices have zero holdup.
-//! This is not a multiphase or pipe-filling model. Inputs and outputs are plain immutable data.
+//! Bounded industrial steps over immutable facts. Legacy open tanks keep their
+//! single-liquid water model; `thermal` adds sealed hydrocarbon equilibrium and
+//! coupled heat exchange. Inline devices have zero holdup (no pipe filling).
 use game_simulation::equipment::ports;
 use protocol::{EquipmentKind, EquipmentReading, EquipmentSnapshot, MaterialAmount, MAX_EQUIPMENT};
 use std::collections::{BTreeMap, BTreeSet};
+mod thermal;
+pub use thermal::{charge, heat, solve};
 
 pub const WATER_MATERIAL: &str = "icheme:water";
 pub const WATER_DENSITY_KG_M3: f64 = 1000.0;
@@ -31,6 +34,21 @@ fn volume(device: &EquipmentSnapshot) -> f64 {
     water_moles(device) * WATER_MOLAR_MASS_KG / WATER_DENSITY_KG_M3
 }
 fn potential(device: &EquipmentSnapshot) -> f64 {
+    if device.kind == EquipmentKind::Vessel {
+        // Lumped sealed-vessel model: fixed geometric centre of mass. The legacy
+        // open-water model retains its level-dependent gravitational energy.
+        let mass: f64 = device
+            .contents
+            .iter()
+            .map(|c| {
+                crate::thermo::MATERIAL_IDS
+                    .iter()
+                    .position(|id| *id == c.material)
+                    .map_or(0.0, |i| c.moles * crate::thermo::MOLAR_MASS_KG[i])
+            })
+            .sum();
+        return mass * G * (f64::from(device.origin[1]) + 1.4);
+    }
     let v = volume(device);
     WATER_DENSITY_KG_M3 * v * G * (f64::from(device.origin[1]) + v / (2.0 * TANK_AREA_M2))
 }
@@ -155,7 +173,7 @@ fn graph(devices: &[EquipmentSnapshot]) -> Result<Vec<Path>, String> {
 }
 
 /// One bounded step; no input is mutated even if the result fails validation.
-pub fn solve(input: &[EquipmentSnapshot], dt_s: f64) -> Result<FlowStep, String> {
+fn solve_water(input: &[EquipmentSnapshot], dt_s: f64) -> Result<FlowStep, String> {
     if input.len() > MAX_EQUIPMENT
         || !dt_s.is_finite()
         || !(0.0..=0.2).contains(&dt_s)
@@ -286,6 +304,7 @@ pub fn solve(input: &[EquipmentSnapshot], dt_s: f64) -> Result<FlowStep, String>
                 "idle"
             }
             .into(),
+            thermal: None,
         });
     }
     let final_energy: f64 = devices.iter().map(stored_energy_j).sum();
@@ -316,6 +335,8 @@ mod tests {
             enabled: false,
             opening: 1.0,
             pump_reversed: false,
+            pipe_ends: None,
+            thermal: None,
             reading: None,
         }
     }
@@ -425,18 +446,18 @@ mod tests {
         let mut ds = circuit(true);
         ds[0].contents[0].material = "game:oil".into();
         let before = ds.clone();
-        assert!(solve(&ds, 0.2).is_err());
+        assert!(solve_water(&ds, 0.2).is_err());
         assert_eq!(ds, before);
         ds = circuit(true);
         ds[1].contents = ds[0].contents.clone();
-        assert!(solve(&ds, 0.2).is_err());
+        assert!(solve_water(&ds, 0.2).is_err());
         ds = circuit(true);
         drain_water(&mut ds[0]).unwrap();
         drain_water(&mut ds[3]).unwrap();
         fill_water(&mut ds[0], 3000.0, 373.15).unwrap();
         fill_water(&mut ds[3], 4000.0, 373.15).unwrap();
         let before = ds.clone();
-        assert!(solve(&ds, 0.2).is_err());
+        assert!(solve_water(&ds, 0.2).is_err());
         assert_eq!(ds, before);
         assert!(solve(&[], f64::NAN).is_err());
         assert!(solve(&[], 1.0).is_err());
@@ -479,5 +500,36 @@ mod tests {
         ds.push(device(9999, EquipmentKind::Pipe, 2000));
         assert!(solve(&ds, 0.2).is_err());
         eprintln!("two 1024-device process steps: {:?}", started.elapsed());
+    }
+
+    #[test]
+    fn bent_water_line_descends_across_height_without_creating_mass_or_energy() {
+        let mut ds = vec![
+            device(1, EquipmentKind::Tank, 0),
+            device(2, EquipmentKind::Pipe, 2),
+            device(3, EquipmentKind::Pipe, 2),
+            device(4, EquipmentKind::Pipe, 2),
+            device(5, EquipmentKind::Pipe, 3),
+            device(6, EquipmentKind::Pipe, 4),
+            device(7, EquipmentKind::Tank, 5),
+        ];
+        ds[0].origin[1] = 12;
+        ds[1].origin[1] = 12;
+        ds[1].pipe_ends = Some([0, 2]);
+        ds[2].origin[1] = 11;
+        ds[2].axis = 1;
+        ds[2].pipe_ends = Some([2, 3]);
+        ds[3].pipe_ends = Some([1, 3]);
+        fill_water(&mut ds[0], 4000.0, 300.0).unwrap();
+        fill_water(&mut ds[6], 4000.0, 300.0).unwrap();
+        let n: f64 = ds.iter().map(water_moles).sum();
+        let e: f64 = ds.iter().map(stored_energy_j).sum();
+        let donor = water_moles(&ds[0]);
+        for _ in 0..20 {
+            ds = solve(&ds, 0.2).unwrap().devices;
+        }
+        assert!(water_moles(&ds[0]) < donor);
+        assert!((ds.iter().map(water_moles).sum::<f64>() - n).abs() < n * 1e-12);
+        assert!((ds.iter().map(stored_energy_j).sum::<f64>() - e).abs() < e * 1e-10);
     }
 }

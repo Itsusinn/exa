@@ -261,6 +261,7 @@ func _release_mouse() -> void:
 
 func _focus_lost() -> void:
 	focused = false
+	if is_instance_valid(bridge): bridge.cancel_pipe_route()
 	_close_equipment()
 	_close_container()
 	_release_mouse()
@@ -295,10 +296,12 @@ func _close_inventory() -> void:
 	_sync_mouse_capture()
 
 func _select_hotbar(slot: int) -> void:
+	bridge.cancel_pipe_route()
 	hotbar_cursor = posmod(slot,9)
 	bridge.select_hotbar(hotbar_cursor)
 
 func _open_container() -> void:
+	bridge.cancel_pipe_route()
 	var device := bridge.equipment_target(yaw,pitch)
 	if not device.is_empty():
 		industry.show_device(device)
@@ -322,6 +325,11 @@ func _close_equipment() -> void:
 func _input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo:
 		if event.keycode == KEY_ESCAPE:
+			if industry.route_state.get("active",false):
+				bridge.cancel_pipe_route()
+				industry.route_state.clear()
+				get_viewport().set_input_as_handled()
+				return
 			if industry.opened:
 				_close_equipment()
 				get_viewport().set_input_as_handled()
@@ -345,10 +353,16 @@ func _input(event: InputEvent) -> void:
 					hud.menu.in_game = true
 					hud.menu.show_page("pause")
 			get_viewport().set_input_as_handled()
+		elif event.keycode == KEY_P and captured and focused and state.get("ready",false) and not hud.menu.visible and not hud.inventory_open:
+			bridge.toggle_pipe_mode()
+			industry.route_state = bridge.pipe_route_state(yaw,pitch)
+			get_viewport().set_input_as_handled()
+			return
 		elif event.is_action_pressed("interact") and captured and not hud.menu.visible and not hud.inventory_open:
 			_open_container()
 			get_viewport().set_input_as_handled()
 		elif event.keycode == KEY_TAB and state.get("ready", false) and not hud.menu.visible:
+			bridge.cancel_pipe_route()
 			_close_equipment()
 			_close_container()
 			hud.inventory_open = not hud.inventory_open
@@ -358,6 +372,7 @@ func _input(event: InputEvent) -> void:
 			_sync_mouse_capture()
 			get_viewport().set_input_as_handled()
 		elif event.keycode == KEY_SLASH and captured and state.get("ready", false) and not state.get("demo", false):
+			bridge.cancel_pipe_route()
 			hud.inventory_open = true
 			_release_mouse()
 			hud.update_state(state, false)
@@ -385,6 +400,10 @@ func _unhandled_input(event: InputEvent) -> void:
 		yaw = fposmod(yaw + event.relative.x * sensitivity,TAU)
 		pitch = clampf(pitch - event.relative.y * sensitivity,-1.45,1.45)
 	if event is InputEventMouseButton and event.pressed:
+		if industry.route_state.get("active",false) and event.button_index in [MOUSE_BUTTON_LEFT,MOUSE_BUTTON_RIGHT]:
+			if event.button_index == MOUSE_BUTTON_RIGHT: bridge.click_pipe_route(yaw,pitch)
+			get_viewport().set_input_as_handled()
+			return
 		if event.button_index in [MOUSE_BUTTON_LEFT,MOUSE_BUTTON_RIGHT] and state.get("ready",false) and not hud.inventory_open and not hud.container_wanted and not hud.container_open:
 			bridge.edit_block(yaw,pitch,event.button_index == MOUSE_BUTTON_RIGHT)
 			get_viewport().set_input_as_handled()
@@ -461,6 +480,7 @@ func _process(delta: float) -> void:
 		_update_entities()
 		industry.update_view(self)
 		hud.equipment_placement = industry.placement
+		hud.pipe_route = industry.route_state
 		ready_frames += 1
 	elif hud.menu.visible and hud.menu.page == "home" and not entering_game:
 		ready_frames += 1

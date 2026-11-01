@@ -30,6 +30,7 @@ var block_target: Dictionary = {}
 var equipment_target: Dictionary = {}
 var equipment_placement: Dictionary = {}
 var equipment_open := false
+var pipe_route: Dictionary = {}
 var menu: Control
 var top: PanelContainer
 
@@ -185,10 +186,14 @@ func update_state(state: Dictionary, captured: bool) -> void:
 	chat.editable = state.ready and not state.demo
 	reticle.visible = state.ready and not panel.visible and not menu.visible and not container_open and not equipment_open
 	var hint := ""
-	if not state.container_error.is_empty(): hint = state.container_error
+	if pipe_route.get("active",false):
+		hint = pipe_route.get("message","")
+		if pipe_route.get("length",0) > 0: hint += " · %d 弯头 · %d 件管道" % [pipe_route.get("elbows",0),pipe_route.get("materials",0)]
+	elif not state.container_error.is_empty(): hint = state.container_error
 	elif not equipment_placement.is_empty():
 		hint = "%s · %s · 右键建造" % [equipment_placement.name,"可放置" if equipment_placement.valid else equipment_placement.reason]
-		if equipment_placement.kind != 0: hint += " · %s 轴 / R 旋转" % ["X","Y","Z"][equipment_placement.axis]
+		if equipment_placement.kind in [1,2,3,6]: hint += " · %s 轴 / R 旋转" % ["X","Y","Z"][equipment_placement.axis]
+		if equipment_placement.kind == 1: hint += " · P 铺管模式"
 		if not equipment_target.is_empty(): hint += " · E 查看 / 左键拆除"
 	elif not equipment_target.is_empty(): hint = "%s · E 查看 / 左键拆除" % equipment_target.name
 	elif not block_target.is_empty():

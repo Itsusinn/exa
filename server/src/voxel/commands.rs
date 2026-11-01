@@ -1,7 +1,7 @@
 use super::*;
 
 const HELP: &str =
-    "指令：/spawn；/tp x y z；/fly [on|off]；/industry kit；/industry fill ID 升 [温度K]；/industry drain ID；/help";
+    "指令：/spawn；/tp x y z；/fly [on|off]；/industry kit；/industry fill ID 升 [温度K]；/industry charge ID 丁烷mol 戊烷mol 温度K；/industry heat ID 焦耳；/industry drain ID；/help";
 
 #[derive(Debug, PartialEq)]
 enum Command {
@@ -12,6 +12,8 @@ enum Command {
     IndustryKit,
     IndustryFill(u64, f64, f64),
     IndustryDrain(u64),
+    IndustryCharge(u64, [f64; 2], f64),
+    IndustryHeat(u64, f64),
 }
 
 fn parse(text: &str, origin: [f32; 3]) -> Result<Command> {
@@ -21,11 +23,22 @@ fn parse(text: &str, origin: [f32; 3]) -> Result<Command> {
         ["/industry", "kit"] => Ok(Command::IndustryKit),
         ["/industry", "fill", id, liters] => parse_fill(id, liters, "293.15"),
         ["/industry", "fill", id, liters, temperature] => parse_fill(id, liters, temperature),
+        ["/industry", "charge", id, butane, pentane, temperature] => {
+            let id=id.parse::<u64>().context("设备ID必须为正整数。")?;
+            let amounts=[butane.parse::<f64>().context("丁烷量必须为摩尔数。")?,pentane.parse::<f64>().context("戊烷量必须为摩尔数。")?];
+            let t=temperature.parse::<f64>().context("温度必须为开尔文数值。")?;
+            anyhow::ensure!(id>0&&amounts.iter().all(|n|n.is_finite()&&*n>=0.0&&*n<=1e12)&&amounts.iter().sum::<f64>()>0.0&&t.is_finite(),"无效装料参数。");
+            Ok(Command::IndustryCharge(id,amounts,t))
+        },
+        ["/industry", "heat", id, joules] => {
+            let id=id.parse::<u64>().context("设备ID必须为正整数。")?;let j=joules.parse::<f64>().context("能量必须为焦耳数值。")?;
+            anyhow::ensure!(id>0&&j.is_finite()&&j.abs()<=1e15,"无效加热参数。");Ok(Command::IndustryHeat(id,j))
+        },
         ["/industry", "drain", id] => Ok(Command::IndustryDrain(
             id.parse().context("设备ID必须为正整数。")?,
         )),
         ["/industry", ..] => anyhow::bail!(
-            "用法：/industry kit；/industry fill ID 升 [温度K]；/industry drain ID（全量排出）"
+            "用法：/industry kit；fill ID 升 [温度K]；charge ID 丁烷mol 戊烷mol 温度K；heat ID 焦耳；drain ID（全量排出）"
         ),
         ["/spawn"] => Ok(Command::Spawn),
         ["/spawn", ..] => anyhow::bail!("用法：/spawn"),
@@ -104,7 +117,7 @@ impl VoxelWorld {
             Command::Help => unreachable!(),
             Command::IndustryKit => {
                 self.industry_kit(id)?;
-                Ok("已领取工业测试补给：2 个储罐、16 段管道、2 台泵、2 个阀门。右键建造，R 旋转，E 检查和控制。".into())
+                Ok("已领取工业测试补给：2 个水罐、4 个密闭容器、1 台换热器、16 段管道、2 台泵、2 个阀门。右键建造，R 旋转，E 检查和控制。".into())
             }
             Command::IndustryFill(equipment, liters, temperature) => {
                 self.exchange_water(id, equipment, Some((liters, temperature)))?;
@@ -113,6 +126,16 @@ impl VoxelWorld {
             Command::IndustryDrain(equipment) => {
                 self.exchange_water(id, equipment, None)?;
                 Ok(format!("设备 {equipment} 已排空，外部排出已记账。"))
+            }
+            Command::IndustryCharge(equipment, amounts, t) => {
+                self.exchange_thermal(id, equipment, Some((amounts, t)), None)?;
+                Ok(format!(
+                    "已向密闭容器 {equipment} 装入测试烃，物料与能量输入已记账。"
+                ))
+            }
+            Command::IndustryHeat(equipment, j) => {
+                self.exchange_thermal(id, equipment, None, Some(j))?;
+                Ok(format!("设备 {equipment} 能量调整 {j} J，热交换已记账。"))
             }
             Command::Fly(value) => {
                 let p = self.players.get_mut(&id).unwrap();

@@ -5,4 +5,5 @@ pub mod industry_data;
 pub mod network;
 pub mod player_data;
 pub mod process;
+pub mod thermo;
 pub mod voxel;

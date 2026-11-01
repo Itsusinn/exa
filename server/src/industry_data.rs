@@ -4,13 +4,10 @@ use anyhow::{Context, Result};
 use game_simulation::{equipment::occupied_cells, grid::Grid};
 use protocol::{EquipmentKind, EquipmentSnapshot, MaterialAmount, AIR, MAX_EQUIPMENT};
 use rkyv::{rancor::Error, Archive, Deserialize, Serialize};
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    path::Path,
-};
+use std::{collections::BTreeMap, path::Path};
 
-pub const DATA_VERSION: u32 = 2;
-const MAGIC: &[u8; 8] = b"DNGIND02";
+pub const DATA_VERSION: u32 = 4;
+const MAGIC: &[u8; 8] = b"DNGIND04";
 
 /// External transfers are explicit; energy includes the fluid's gravitational energy.
 #[derive(Archive, Serialize, Deserialize, Debug, Clone, Default, PartialEq)]
@@ -20,6 +17,12 @@ pub struct ExchangeLedger {
     pub injected_energy_j: f64,
     pub drained_energy_j: f64,
     pub pump_work_j: f64,
+    pub hydro_injected_moles: [f64; 2],
+    pub hydro_drained_moles: [f64; 2],
+    pub hydro_injected_energy_j: f64,
+    pub hydro_drained_energy_j: f64,
+    pub heat_added_j: f64,
+    pub heat_removed_j: f64,
 }
 impl ExchangeLedger {
     pub fn valid(&self) -> bool {
@@ -29,9 +32,16 @@ impl ExchangeLedger {
             self.injected_energy_j,
             self.drained_energy_j,
             self.pump_work_j,
+            self.heat_added_j,
+            self.heat_removed_j,
         ]
         .iter()
+        .chain(&self.hydro_injected_moles)
+        .chain(&self.hydro_drained_moles)
         .all(|v| v.is_finite() && *v >= 0.0 && *v <= 1e24)
+            && [self.hydro_injected_energy_j, self.hydro_drained_energy_j]
+                .iter()
+                .all(|v| v.is_finite() && v.abs() <= 1e24)
     }
 }
 
@@ -53,6 +63,40 @@ pub struct EquipmentData {
     pub enabled: bool,
     pub opening: f64,
     pub pump_reversed: bool,
+    pub thermal: Option<ThermalData>,
+    pub pipe_ends: Option<[u8; 2]>,
+}
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct ThermalData {
+    pub mode: String,
+    pub duty_fraction: f64,
+    pub target_temperature_k: f64,
+}
+impl ThermalData {
+    fn capture(t: &protocol::ThermalSettings) -> Self {
+        Self {
+            mode: match t.mode {
+                protocol::HeatControlMode::Off => "off",
+                protocol::HeatControlMode::Manual => "manual",
+                protocol::HeatControlMode::OutletTemperature => "outlet_temperature",
+            }
+            .into(),
+            duty_fraction: t.duty_fraction,
+            target_temperature_k: t.target_temperature_k,
+        }
+    }
+    fn restore(&self) -> Result<protocol::ThermalSettings> {
+        Ok(protocol::ThermalSettings {
+            mode: match self.mode.as_str() {
+                "off" => protocol::HeatControlMode::Off,
+                "manual" => protocol::HeatControlMode::Manual,
+                "outlet_temperature" => protocol::HeatControlMode::OutletTemperature,
+                _ => anyhow::bail!("unknown heat control mode"),
+            },
+            duty_fraction: self.duty_fraction,
+            target_temperature_k: self.target_temperature_k,
+        })
+    }
 }
 impl EquipmentData {
     fn capture(value: &EquipmentSnapshot) -> Self {
@@ -64,6 +108,9 @@ impl EquipmentData {
                 EquipmentKind::Pipe => "game:pipe",
                 EquipmentKind::Pump => "game:pump",
                 EquipmentKind::Valve => "game:valve",
+                EquipmentKind::Vessel => "game:vessel",
+                EquipmentKind::HeatExchanger => "game:heat_exchanger",
+                EquipmentKind::PipeRack => "game:pipe_rack",
             }
             .into(),
             origin: value.origin,
@@ -80,6 +127,8 @@ impl EquipmentData {
             enabled: value.enabled,
             opening: value.opening,
             pump_reversed: value.pump_reversed,
+            thermal: value.thermal.as_ref().map(ThermalData::capture),
+            pipe_ends: value.pipe_ends,
         }
     }
     fn restore(&self) -> Result<EquipmentSnapshot> {
@@ -88,6 +137,9 @@ impl EquipmentData {
             "game:pipe" => EquipmentKind::Pipe,
             "game:pump" => EquipmentKind::Pump,
             "game:valve" => EquipmentKind::Valve,
+            "game:vessel" => EquipmentKind::Vessel,
+            "game:heat_exchanger" => EquipmentKind::HeatExchanger,
+            "game:pipe_rack" => EquipmentKind::PipeRack,
             _ => anyhow::bail!("unknown saved equipment kind"),
         };
         let value = EquipmentSnapshot {
@@ -108,7 +160,13 @@ impl EquipmentData {
             enabled: self.enabled,
             opening: self.opening,
             pump_reversed: self.pump_reversed,
+            thermal: self
+                .thermal
+                .as_ref()
+                .map(ThermalData::restore)
+                .transpose()?,
             reading: None,
+            pipe_ends: self.pipe_ends,
         };
         anyhow::ensure!(value.valid(), "invalid equipment facts");
         Ok(value)
@@ -118,6 +176,8 @@ impl EquipmentData {
 #[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct IndustryArchive {
     pub data_version: u32,
+    /// Internal energy is meaningful only under the property model that wrote it.
+    pub thermo_revision: String,
     pub generation: String,
     pub seed: u64,
     pub last_update: u64,
@@ -144,6 +204,7 @@ impl IndustryArchive {
         );
         let archive = Self {
             data_version: DATA_VERSION,
+            thermo_revision: crate::thermo::MODEL_REVISION.into(),
             generation,
             seed,
             last_update,
@@ -164,6 +225,8 @@ impl IndustryArchive {
             self.data_version == DATA_VERSION,
             "unsupported industry archive version"
         );
+        anyhow::ensure!(self.thermo_revision == crate::thermo::MODEL_REVISION,
+            "unsupported thermodynamic model revision; stored inventories and energy were not changed");
         anyhow::ensure!(self.ledger.valid(), "invalid industry exchange ledger");
         anyhow::ensure!(
             uuid::Uuid::parse_str(&self.generation)?.to_string() == self.generation,
@@ -177,7 +240,7 @@ impl IndustryArchive {
             "invalid industry counters"
         );
         let mut records = BTreeMap::new();
-        let mut cells = BTreeSet::new();
+        let mut cells = BTreeMap::<[i32; 3], Vec<u64>>::new();
         for saved in &self.equipment {
             let equipment = saved.restore()?;
             anyhow::ensure!(
@@ -186,9 +249,15 @@ impl IndustryArchive {
             );
             for cell in occupied_cells(&equipment) {
                 anyhow::ensure!(
-                    grid.get(cell) == AIR && cells.insert(cell),
+                    grid.get(cell) == AIR
+                        && cells
+                            .get(&cell)
+                            .is_none_or(|ids| ids.iter().all(|id| records.get(id).is_some_and(
+                                |old| game_simulation::equipment::rack_compatible(old, &equipment)
+                            ))),
                     "equipment overlaps terrain, unknown space or another device"
                 );
+                cells.entry(cell).or_default().push(equipment.id);
             }
             anyhow::ensure!(
                 records.insert(equipment.id, equipment).is_none(),
@@ -206,6 +275,231 @@ pub fn write_new(path: &Path, archive: &IndustryArchive) -> Result<()> {
 pub fn read(path: &Path) -> Result<IndustryArchive> {
     let mapped = MappedArchive::open(path, MAGIC)?;
     rkyv::from_bytes::<IndustryArchive, Error>(mapped.payload()).context("decode industry archive")
+}
+
+// Exact version-three layout, before explicit routed pipe ends were appended.
+#[derive(Archive, Serialize, Deserialize)]
+struct V3Equipment {
+    id: u64,
+    revision: u64,
+    kind: String,
+    origin: [i32; 3],
+    axis: u8,
+    contents: Vec<Component>,
+    internal_energy_j: f64,
+    enabled: bool,
+    opening: f64,
+    pump_reversed: bool,
+    thermal: Option<ThermalData>,
+}
+#[derive(Archive, Serialize, Deserialize)]
+struct V3Archive {
+    data_version: u32,
+    thermo_revision: String,
+    generation: String,
+    seed: u64,
+    last_update: u64,
+    revision: u64,
+    next_id: u64,
+    equipment: Vec<V3Equipment>,
+    ledger: ExchangeLedger,
+}
+pub fn read_v3(path: &Path) -> Result<IndustryArchive> {
+    let mapped = MappedArchive::open(path, b"DNGIND03")?;
+    let old = rkyv::from_bytes::<V3Archive, Error>(mapped.payload())
+        .context("decode stage-three industry archive")?;
+    anyhow::ensure!(
+        old.data_version == 3,
+        "unsupported version-three industry archive"
+    );
+    anyhow::ensure!(
+        old.equipment.iter().all(|e| matches!(
+            e.kind.as_str(),
+            "game:tank"
+                | "game:pipe"
+                | "game:pump"
+                | "game:valve"
+                | "game:vessel"
+                | "game:heat_exchanger"
+        )),
+        "unknown version-three equipment kind"
+    );
+    Ok(IndustryArchive {
+        data_version: DATA_VERSION,
+        thermo_revision: old.thermo_revision,
+        generation: old.generation,
+        seed: old.seed,
+        last_update: old.last_update,
+        revision: old.revision,
+        next_id: old.next_id,
+        ledger: old.ledger,
+        equipment: old
+            .equipment
+            .into_iter()
+            .map(|e| EquipmentData {
+                id: e.id,
+                revision: e.revision,
+                kind: e.kind,
+                origin: e.origin,
+                axis: e.axis,
+                contents: e.contents,
+                internal_energy_j: e.internal_energy_j,
+                enabled: e.enabled,
+                opening: e.opening,
+                pump_reversed: e.pump_reversed,
+                thermal: e.thermal,
+                pipe_ends: None,
+            })
+            .collect(),
+    })
+}
+#[cfg(test)]
+pub(crate) fn write_v3_fixture(path: &Path, a: &IndustryArchive) -> Result<()> {
+    let old = V3Archive {
+        data_version: 3,
+        thermo_revision: a.thermo_revision.clone(),
+        generation: a.generation.clone(),
+        seed: a.seed,
+        last_update: a.last_update,
+        revision: a.revision,
+        next_id: a.next_id,
+        ledger: a.ledger.clone(),
+        equipment: a
+            .equipment
+            .iter()
+            .map(|e| V3Equipment {
+                id: e.id,
+                revision: e.revision,
+                kind: e.kind.clone(),
+                origin: e.origin,
+                axis: e.axis,
+                contents: e.contents.clone(),
+                internal_energy_j: e.internal_energy_j,
+                enabled: e.enabled,
+                opening: e.opening,
+                pump_reversed: e.pump_reversed,
+                thermal: e.thermal.clone(),
+            })
+            .collect(),
+    };
+    archive_io::write_new(path, b"DNGIND03", &rkyv::to_bytes::<Error>(&old)?)
+}
+
+// Exact version-two layout: new rkyv fields cannot safely decode old archived bytes.
+#[derive(Archive, Serialize, Deserialize)]
+struct V2Ledger {
+    injected_moles: f64,
+    drained_moles: f64,
+    injected_energy_j: f64,
+    drained_energy_j: f64,
+    pump_work_j: f64,
+}
+#[derive(Archive, Serialize, Deserialize)]
+struct V2Equipment {
+    id: u64,
+    revision: u64,
+    kind: String,
+    origin: [i32; 3],
+    axis: u8,
+    contents: Vec<Component>,
+    internal_energy_j: f64,
+    enabled: bool,
+    opening: f64,
+    pump_reversed: bool,
+}
+#[derive(Archive, Serialize, Deserialize)]
+struct V2Archive {
+    data_version: u32,
+    generation: String,
+    seed: u64,
+    last_update: u64,
+    revision: u64,
+    next_id: u64,
+    equipment: Vec<V2Equipment>,
+    ledger: V2Ledger,
+}
+pub fn read_v2(path: &Path) -> Result<IndustryArchive> {
+    let mapped = MappedArchive::open(path, b"DNGIND02")?;
+    let old = rkyv::from_bytes::<V2Archive, Error>(mapped.payload())
+        .context("decode stage-two industry archive")?;
+    anyhow::ensure!(old.data_version == 2, "unsupported legacy industry version");
+    anyhow::ensure!(
+        old.equipment.iter().all(|e| matches!(
+            e.kind.as_str(),
+            "game:tank" | "game:pipe" | "game:pump" | "game:valve"
+        )),
+        "unknown version-two equipment kind"
+    );
+    Ok(IndustryArchive {
+        data_version: DATA_VERSION,
+        thermo_revision: crate::thermo::MODEL_REVISION.into(),
+        generation: old.generation,
+        seed: old.seed,
+        last_update: old.last_update,
+        revision: old.revision,
+        next_id: old.next_id,
+        equipment: old
+            .equipment
+            .into_iter()
+            .map(|e| EquipmentData {
+                id: e.id,
+                revision: e.revision,
+                kind: e.kind,
+                origin: e.origin,
+                axis: e.axis,
+                contents: e.contents,
+                internal_energy_j: e.internal_energy_j,
+                enabled: e.enabled,
+                opening: e.opening,
+                pump_reversed: e.pump_reversed,
+                thermal: None,
+                pipe_ends: None,
+            })
+            .collect(),
+        ledger: ExchangeLedger {
+            injected_moles: old.ledger.injected_moles,
+            drained_moles: old.ledger.drained_moles,
+            injected_energy_j: old.ledger.injected_energy_j,
+            drained_energy_j: old.ledger.drained_energy_j,
+            pump_work_j: old.ledger.pump_work_j,
+            ..Default::default()
+        },
+    })
+}
+#[cfg(test)]
+pub(crate) fn write_v2_fixture(path: &Path, a: &IndustryArchive) -> Result<()> {
+    let old = V2Archive {
+        data_version: 2,
+        generation: a.generation.clone(),
+        seed: a.seed,
+        last_update: a.last_update,
+        revision: a.revision,
+        next_id: a.next_id,
+        equipment: a
+            .equipment
+            .iter()
+            .map(|e| V2Equipment {
+                id: e.id,
+                revision: e.revision,
+                kind: e.kind.clone(),
+                origin: e.origin,
+                axis: e.axis,
+                contents: e.contents.clone(),
+                internal_energy_j: e.internal_energy_j,
+                enabled: e.enabled,
+                opening: e.opening,
+                pump_reversed: e.pump_reversed,
+            })
+            .collect(),
+        ledger: V2Ledger {
+            injected_moles: a.ledger.injected_moles,
+            drained_moles: a.ledger.drained_moles,
+            injected_energy_j: a.ledger.injected_energy_j,
+            drained_energy_j: a.ledger.drained_energy_j,
+            pump_work_j: a.ledger.pump_work_j,
+        },
+    };
+    archive_io::write_new(path, b"DNGIND02", &rkyv::to_bytes::<Error>(&old)?)
 }
 
 // Keep the exact stage-one rkyv layout; changing a struct cannot decode old bytes safely.
@@ -242,6 +536,7 @@ pub fn read_legacy(path: &Path) -> Result<IndustryArchive> {
     );
     Ok(IndustryArchive {
         data_version: DATA_VERSION,
+        thermo_revision: crate::thermo::MODEL_REVISION.into(),
         generation: old.generation,
         seed: old.seed,
         last_update: old.last_update,
@@ -262,6 +557,8 @@ pub fn read_legacy(path: &Path) -> Result<IndustryArchive> {
                 enabled: false,
                 opening: 1.0,
                 pump_reversed: false,
+                thermal: None,
+                pipe_ends: None,
             })
             .collect(),
     })

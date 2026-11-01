@@ -72,13 +72,73 @@ impl GameBridge {
 
     #[func]
     fn rotate_equipment(&mut self) {
-        if self
-            .session
-            .selected_equipment()
-            .is_some_and(|kind| kind != protocol::EquipmentKind::Tank)
-        {
+        if self.session.selected_equipment() == Some(protocol::EquipmentKind::PipeRack) {
+            self.session.equipment_axis = if self.session.equipment_axis == 0 {
+                2
+            } else {
+                0
+            };
+            return;
+        }
+        if self.session.selected_equipment().is_some_and(|kind| {
+            matches!(
+                kind,
+                protocol::EquipmentKind::Pipe
+                    | protocol::EquipmentKind::Pump
+                    | protocol::EquipmentKind::Valve
+            )
+        }) {
             self.session.equipment_axis = (self.session.equipment_axis + 1) % 3;
         }
+    }
+
+    #[func]
+    fn toggle_pipe_mode(&mut self) {
+        self.session.toggle_pipe_mode();
+    }
+
+    #[func]
+    fn cancel_pipe_route(&mut self) {
+        self.session.cancel_pipe_route();
+    }
+
+    #[func]
+    fn click_pipe_route(&mut self, yaw: f32, pitch: f32) {
+        self.session.click_pipe_route(yaw, pitch);
+    }
+
+    #[func]
+    fn pipe_route_state(&mut self, yaw: f32, pitch: f32) -> VarDictionary {
+        self.session.update_pipe_route(yaw, pitch);
+        let s = &self.session;
+        let anchor = |a: Option<protocol::PipeAnchor>| -> VarDictionary {
+            a.and_then(|a| s.model.terrain.equipment.get(&a.id).and_then(|d| presentation::equipment_ports(d).get(usize::from(a.port)).copied().map(|port| (a,port))))
+                .map_or_else(VarDictionary::new, |(a,p)| vdict! {"id"=>a.id as i64,"revision"=>a.revision as i64,"port"=>i64::from(a.port),"position"=>vector(p.position)})
+        };
+        let cells: VarArray = s.pipe_plan.iter().map(|(cell,ends)| vdict! {"origin"=>Vector3i::new(cell[0],cell[1],cell[2]),"first"=>i32::from(ends[0]),"second"=>i32::from(ends[1])}.to_variant()).collect();
+        let held: u32 = s
+            .model
+            .inventory
+            .slots
+            .iter()
+            .flatten()
+            .filter(|item| item.name == protocol::PIPE_ITEM)
+            .map(|item| item.quantity)
+            .sum();
+        let enough = held as usize >= s.pipe_plan.len();
+        let status = if !s.pipe_plan.is_empty() && !enough {
+            format!(
+                "管道不足：需要 {} 件，背包有 {} 件",
+                s.pipe_plan.len(),
+                held
+            )
+        } else {
+            s.pipe_status.clone()
+        };
+        vdict! {"active"=>s.pipe_mode,"pending"=>s.pipe_pending.is_some(),"revision"=>s.pipe_plan_revision as i64,
+        "start"=>&anchor(s.pipe_start),"target"=>&anchor(s.pipe_target),"cells"=>&cells,
+        "length"=>s.pipe_plan.len() as i64,"elbows"=>s.pipe_plan.iter().filter(|(_,ends)|ends[0]/2!=ends[1]/2).count() as i64,
+        "materials"=>s.pipe_plan.len() as i64,"held"=>held as i64,"valid"=>!s.pipe_plan.is_empty() && enough,"message"=>status}
     }
 
     #[func]
@@ -120,6 +180,47 @@ impl GameBridge {
     }
 
     #[func]
+    #[allow(clippy::too_many_arguments)]
+    fn configure_thermal(
+        &mut self,
+        id: i64,
+        revision: i64,
+        mode: i32,
+        duty_fraction: f64,
+        target_temperature_k: f64,
+        yaw: f32,
+        pitch: f32,
+    ) {
+        let mode = match mode {
+            0 => protocol::HeatControlMode::Off,
+            1 => protocol::HeatControlMode::Manual,
+            2 => protocol::HeatControlMode::OutletTemperature,
+            _ => return,
+        };
+        if id <= 0
+            || revision < 0
+            || !duty_fraction.is_finite()
+            || !(0.0..=1.0).contains(&duty_fraction)
+            || !target_temperature_k.is_finite()
+            || !(250.0..=600.0).contains(&target_temperature_k)
+        {
+            return;
+        }
+        self.session
+            .configure_equipment(protocol::EquipmentCommand::ConfigureThermal {
+                id: id as u64,
+                revision: revision as u64,
+                yaw,
+                pitch,
+                settings: protocol::ThermalSettings {
+                    mode,
+                    duty_fraction,
+                    target_temperature_k,
+                },
+            });
+    }
+
+    #[func]
     fn equipment_target(&self, yaw: f32, pitch: f32) -> VarDictionary {
         self.session
             .equipment_target(yaw, pitch)
@@ -141,7 +242,7 @@ impl GameBridge {
 
     #[func]
     fn equipment_geometry(&self, kind: i32, axis: i32) -> VarDictionary {
-        if !(0..=3).contains(&kind) || !(0..=2).contains(&axis) {
+        if !(0..=6).contains(&kind) || !(0..=2).contains(&axis) {
             return VarDictionary::new();
         }
         geometry(presentation::equipment_shape(
@@ -149,9 +250,28 @@ impl GameBridge {
                 0 => protocol::EquipmentKind::Tank,
                 1 => protocol::EquipmentKind::Pipe,
                 2 => protocol::EquipmentKind::Pump,
-                _ => protocol::EquipmentKind::Valve,
+                3 => protocol::EquipmentKind::Valve,
+                4 => protocol::EquipmentKind::Vessel,
+                5 => protocol::EquipmentKind::HeatExchanger,
+                _ => protocol::EquipmentKind::PipeRack,
             },
             axis as u8,
+        ))
+    }
+
+    #[func]
+    fn pipe_geometry(&self, axis: i32, first: i32, second: i32) -> VarDictionary {
+        if !(0..=2).contains(&axis)
+            || !(0..6).contains(&first)
+            || !(0..6).contains(&second)
+            || first >= second
+        {
+            return VarDictionary::new();
+        }
+        geometry(presentation::equipment_shape_with_ends(
+            protocol::EquipmentKind::Pipe,
+            axis as u8,
+            Some([first as u8, second as u8]),
         ))
     }
 
@@ -448,8 +568,14 @@ impl GameBridge {
 }
 
 fn equipment_dictionary(device: &protocol::EquipmentSnapshot) -> VarDictionary {
+    let pipe_ends: VarArray = device
+        .pipe_ends
+        .into_iter()
+        .flatten()
+        .map(|face| i32::from(face).to_variant())
+        .collect();
     let ports: VarArray = presentation::equipment_ports(device).iter().map(|port| {
-        vdict! { "position" => vector(port.position), "normal" => Vector3i::new(port.normal[0], port.normal[1], port.normal[2]) }.to_variant()
+        vdict! { "id" => i64::from(port.id), "circuit" => i64::from(port.circuit), "position" => vector(port.position), "normal" => Vector3i::new(port.normal[0], port.normal[1], port.normal[2]) }.to_variant()
     }).collect();
     let contents: VarArray = device
         .contents
@@ -459,11 +585,36 @@ fn equipment_dictionary(device: &protocol::EquipmentSnapshot) -> VarDictionary {
         })
         .collect();
     vdict! { "id" => device.id as i64, "revision" => device.revision as i64,
-    "name" => device.kind.item_name(), "kind" => match device.kind { protocol::EquipmentKind::Tank => 0i32, protocol::EquipmentKind::Pipe => 1, protocol::EquipmentKind::Pump => 2, protocol::EquipmentKind::Valve => 3 },
+    "name" => device.kind.item_name(), "kind" => match device.kind { protocol::EquipmentKind::Tank => 0i32, protocol::EquipmentKind::Pipe => 1, protocol::EquipmentKind::Pump => 2, protocol::EquipmentKind::Valve => 3, protocol::EquipmentKind::Vessel => 4, protocol::EquipmentKind::HeatExchanger => 5, protocol::EquipmentKind::PipeRack => 6 },
     "origin" => Vector3i::new(device.origin[0],device.origin[1],device.origin[2]), "axis" => i64::from(device.axis),
-    "ports" => &ports, "contents" => &contents, "internal_energy_j" => device.internal_energy_j,
+    "ports" => &ports, "pipe_ends" => &pipe_ends, "contents" => &contents, "internal_energy_j" => device.internal_energy_j,
     "empty" => device.is_empty(), "enabled" => device.enabled, "opening" => device.opening,
-    "pump_reversed" => device.pump_reversed, "reading" => &reading_dictionary(device.reading.as_ref()) }
+    "pump_reversed" => device.pump_reversed, "thermal" => &thermal_settings_dictionary(device.thermal.as_ref()), "reading" => &reading_dictionary(device.reading.as_ref()) }
+}
+
+fn thermal_settings_dictionary(settings: Option<&protocol::ThermalSettings>) -> VarDictionary {
+    settings.map_or_else(VarDictionary::new, |settings| vdict! {
+        "mode" => match settings.mode { protocol::HeatControlMode::Off => 0i32, protocol::HeatControlMode::Manual => 1, protocol::HeatControlMode::OutletTemperature => 2 },
+        "duty_fraction" => settings.duty_fraction, "target_temperature_k" => settings.target_temperature_k,
+    })
+}
+
+fn thermal_reading_dictionary(reading: Option<&protocol::ThermalReading>) -> VarDictionary {
+    reading.map_or_else(VarDictionary::new, |reading| {
+        let temperatures = |values: [Option<f64>; 2]| -> VarArray {
+            values.into_iter().map(|v| v.map_or(Variant::nil(), |v| v.to_variant())).collect()
+        };
+        let numbers = |values: [f64; 2]| -> VarArray { values.into_iter().map(|v| v.to_variant()).collect() };
+        vdict! {
+            "vapor_fraction" => &reading.vapor_fraction.map_or(Variant::nil(), |v| v.to_variant()),
+            "liquid_moles" => &numbers(reading.liquid_moles), "vapor_moles" => &numbers(reading.vapor_moles),
+            "heat_w" => reading.heat_w, "inlet_temperature_k" => &temperatures(reading.inlet_temperature_k),
+            "outlet_temperature_k" => &temperatures(reading.outlet_temperature_k), "flow_m3_s" => &numbers(reading.flow_m3_s),
+            "quality" => match reading.quality { protocol::ReadingQuality::Available => "available", protocol::ReadingQuality::NoFlow => "no_flow", protocol::ReadingQuality::Unavailable => "unavailable" },
+            "control_state" => match reading.control_state { protocol::ControlState::Off => "off", protocol::ControlState::Manual => "manual", protocol::ControlState::Regulating => "regulating", protocol::ControlState::Limited => "limited" },
+            "sampled_at_tick" => reading.sampled_at_tick as i64,
+        }
+    })
 }
 
 fn reading_dictionary(reading: Option<&protocol::EquipmentReading>) -> VarDictionary {
@@ -472,6 +623,7 @@ fn reading_dictionary(reading: Option<&protocol::EquipmentReading>) -> VarDictio
         "pressure_pa" => &reading.pressure_pa.map_or(Variant::nil(), |value| value.to_variant()), "volume_m3" => reading.volume_m3,
         "capacity_m3" => reading.capacity_m3, "flow_m3_s" => reading.flow_m3_s,
         "status" => reading.status.as_str(),
+        "thermal" => &thermal_reading_dictionary(reading.thermal.as_ref()),
     })
 }
 

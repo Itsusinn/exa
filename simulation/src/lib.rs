@@ -3,6 +3,7 @@ use protocol::{Body, PlayerInput};
 pub mod equipment;
 pub mod grid;
 mod physics;
+pub mod pipe_route;
 pub mod targeting;
 
 pub const DT: f32 = 1.0 / 30.0;

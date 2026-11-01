@@ -15,6 +15,43 @@ pub fn equipment_shape(kind: EquipmentKind, axis: u8) -> Mesh {
             cylinder(&mut mesh, [0.0, 0.5, 0.5], 0, 0.4, 0.125, dark);
             cylinder(&mut mesh, [1.6, 0.5, 0.5], 0, 0.4, 0.125, dark);
         }
+        EquipmentKind::Vessel => {
+            // Closed, banded pressure vessel. The bands and top neck distinguish
+            // it from the legacy atmospheric tank without changing its ports.
+            cylinder(&mut mesh, [1.0, 0.0, 1.0], 1, 2.85, 0.9, [0.42, 0.51, 0.58]);
+            for y in [0.35, 2.35] {
+                cylinder(&mut mesh, [1.0, y, 1.0], 1, 0.12, 0.925, dark);
+            }
+            cylinder(&mut mesh, [1.0, 2.85, 1.0], 1, 0.15, 0.22, steel);
+            cylinder(&mut mesh, [0.0, 0.5, 0.5], 0, 0.4, 0.125, dark);
+            cylinder(&mut mesh, [1.6, 0.5, 0.5], 0, 0.4, 0.125, dark);
+        }
+        EquipmentKind::HeatExchanger => {
+            // Two separate, colour-coded passages share a plate body. Their
+            // four ends exactly match the shared geometry's A/B port centres.
+            mesh.cuboid([0.25, 0.2, 0.25], [1.5, 0.6, 2.5], steel, 0);
+            for (z, colour) in [(0.5, [0.7, 0.36, 0.2]), (2.5, [0.2, 0.48, 0.65])] {
+                cylinder(&mut mesh, [0.0, 0.5, z], 0, 0.25, 0.125, colour);
+                cylinder(&mut mesh, [1.75, 0.5, z], 0, 0.25, 0.125, colour);
+                mesh.cuboid([0.3, 0.8, z - 0.07], [1.4, 0.025, 0.14], colour, 0);
+            }
+            for x in [0.5, 0.8, 1.1, 1.4] {
+                mesh.cuboid([x, 0.25, 0.2], [0.06, 0.5, 2.6], dark, 0);
+            }
+        }
+        EquipmentKind::PipeRack => {
+            for (mut origin, mut size) in [
+                ([0.05, 0.0, 0.4], [0.1, 0.25, 0.2]),
+                ([0.85, 0.0, 0.4], [0.1, 0.25, 0.2]),
+                ([0.05, 0.25, 0.375], [0.9, 0.125, 0.25]),
+            ] {
+                if axis == 2 {
+                    origin.swap(0, 2);
+                    size.swap(0, 2);
+                }
+                mesh.cuboid(origin, size, steel, 0);
+            }
+        }
         EquipmentKind::Pipe => {
             let axis = usize::from(axis.min(2));
             let mut origin = [0.5; 3];
@@ -61,6 +98,39 @@ pub fn equipment_shape(kind: EquipmentKind, axis: u8) -> Mesh {
             mesh.cuboid(position, size, steel, 0);
         }
     }
+    mesh
+}
+
+pub fn equipment_shape_with_ends(kind: EquipmentKind, axis: u8, ends: Option<[u8; 2]>) -> Mesh {
+    if kind != EquipmentKind::Pipe || ends.is_none() {
+        return equipment_shape(kind, axis);
+    }
+    let ends = ends.unwrap();
+    if ends[0] / 2 == ends[1] / 2 {
+        return equipment_shape(kind, ends[0] / 2);
+    }
+    let mut mesh = Mesh::default();
+    let steel = [0.57, 0.62, 0.64];
+    let dark = [0.27, 0.31, 0.33];
+    for face in ends {
+        let axis = usize::from(face / 2);
+        let mut origin = [0.5; 3];
+        origin[axis] = if face % 2 == 0 { 0.04 } else { 0.5 };
+        cylinder_section(&mut mesh, origin, axis, 0.46, 0.125, steel, [false, false]);
+        origin[axis] = if face % 2 == 0 { 0.0 } else { 0.96 };
+        cylinder_section(
+            &mut mesh,
+            origin,
+            axis,
+            0.04,
+            0.125,
+            dark,
+            [face % 2 == 0, face % 2 == 1],
+        );
+    }
+    // A compact coupling conceals the meeting half-cylinder seams without
+    // extending outside the shared union of the two pipe arms.
+    mesh.cuboid([0.38; 3], [0.24; 3], steel, 0);
     mesh
 }
 
@@ -300,9 +370,23 @@ mod tests {
     use game_simulation::grid::Grid;
 
     #[test]
-    fn pump_and_valve_meshes_stay_inside_shared_collision_envelopes() {
-        for kind in [EquipmentKind::Pump, EquipmentKind::Valve] {
-            for axis in 0..3 {
+    fn equipment_meshes_stay_inside_shared_collision_envelopes() {
+        for kind in [
+            EquipmentKind::Pump,
+            EquipmentKind::Valve,
+            EquipmentKind::Vessel,
+            EquipmentKind::HeatExchanger,
+            EquipmentKind::PipeRack,
+        ] {
+            let axes = if matches!(kind, EquipmentKind::Vessel | EquipmentKind::HeatExchanger) {
+                1
+            } else {
+                3
+            };
+            for axis in 0..axes {
+                if kind == EquipmentKind::PipeRack && axis == 1 {
+                    continue;
+                }
                 let device = EquipmentSnapshot {
                     id: 1,
                     revision: 0,
@@ -314,6 +398,8 @@ mod tests {
                     enabled: false,
                     opening: 1.0,
                     pump_reversed: false,
+                    thermal: (kind == EquipmentKind::HeatExchanger).then(ThermalSettings::default),
+                    pipe_ends: None,
                     reading: None,
                 };
                 let boxes = game_simulation::equipment::collision_boxes(&device);
@@ -327,6 +413,44 @@ mod tests {
                             point[i] >= shape.min[i] - 1e-6 && point[i] <= shape.max[i] + 1e-6
                         })),
                         "{kind:?} axis={axis}: visible surface outside shared collision {point:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_explicit_pipe_join_stays_in_the_shared_arm_collision() {
+        for first in 0..6 {
+            for second in first + 1..6 {
+                let device = EquipmentSnapshot {
+                    id: 1,
+                    revision: 0,
+                    kind: EquipmentKind::Pipe,
+                    origin: [0, 1, 0],
+                    axis: 0,
+                    contents: vec![],
+                    internal_energy_j: 0.0,
+                    enabled: false,
+                    opening: 1.0,
+                    pump_reversed: false,
+                    thermal: None,
+                    pipe_ends: Some([first, second]),
+                    reading: None,
+                };
+                assert!(device.valid());
+                let boxes = game_simulation::equipment::collision_boxes(&device);
+                let mesh = equipment_shape_with_ends(device.kind, device.axis, device.pipe_ends);
+                assert!(!mesh.vertices.is_empty());
+                for vertex in mesh.vertices {
+                    let mut point = vertex.position;
+                    point[1] += 1.0;
+                    assert!(
+                        boxes
+                            .iter()
+                            .any(|shape| (0..3).all(|i| point[i] >= shape.min[i] - 1e-6
+                                && point[i] <= shape.max[i] + 1e-6)),
+                        "{first}/{second}: {point:?}"
                     );
                 }
             }

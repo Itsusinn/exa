@@ -19,6 +19,63 @@ struct Peer {
 }
 
 impl Peer {
+    async fn select_equipment(&mut self, name: &str) {
+        let slot = self
+            .model
+            .lock()
+            .await
+            .inventory
+            .slots
+            .iter()
+            .position(|item| item.as_ref().is_some_and(|item| item.name == name))
+            .unwrap() as u8;
+        self.send(ClientMessage::Inventory(InventoryCommand::Select { slot }))
+            .await;
+        self.wait(|m| m.inventory.selected == slot).await;
+    }
+
+    async fn point_port(&mut self, anchor: PipeAnchor) -> (f32, f32) {
+        let point = {
+            let m = self.model.lock().await;
+            game_simulation::equipment::ports(&m.terrain.equipment[&anchor.id])
+                [usize::from(anchor.port)]
+            .position
+        };
+        let (yaw, pitch) = aim(self.model.lock().await.body.position, point);
+        self.sequence += 1;
+        self.send(ClientMessage::Input3d {
+            seq: self.sequence,
+            input: PlayerInput {
+                yaw,
+                pitch,
+                ..Default::default()
+            },
+        })
+        .await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        (yaw, pitch)
+    }
+
+    async fn begin_pipe(&mut self, request_id: u64, anchor: PipeAnchor) {
+        let (yaw, pitch) = self.point_port(anchor).await;
+        self.send(ClientMessage::Equipment(EquipmentCommand::BeginPipe {
+            request_id,
+            yaw,
+            pitch,
+        }))
+        .await;
+        self.wait(|m| {
+            m.pipe_reply
+                .as_ref()
+                .is_some_and(|reply| reply.request_id == request_id)
+        })
+        .await;
+        assert_eq!(
+            self.model.lock().await.pipe_reply.as_ref().unwrap().stage,
+            PipeRouteStage::Started
+        );
+    }
+
     async fn connect(address: std::net::SocketAddr, cert: Vec<u8>, identity: u8) -> Self {
         let (endpoint, connection) = connect_endpoint(address, cert).await.unwrap();
         let (mut send, mut recv) = connection.open_bi().await.unwrap();
@@ -129,11 +186,17 @@ impl Peer {
     }
 
     async fn point_at(&mut self, device: &EquipmentSnapshot) -> (f32, f32) {
-        let point = if device.kind == EquipmentKind::Tank {
+        let point = if matches!(device.kind, EquipmentKind::Tank | EquipmentKind::Vessel) {
             [
                 device.origin[0] as f32 + 1.0,
                 device.origin[1] as f32 + 1.4,
                 device.origin[2] as f32 + 1.0,
+            ]
+        } else if device.kind == EquipmentKind::HeatExchanger {
+            [
+                device.origin[0] as f32 + 1.0,
+                device.origin[1] as f32 + 0.5,
+                device.origin[2] as f32 + 1.5,
             ]
         } else {
             device.origin.map(|v| v as f32 + 0.5)
@@ -169,6 +232,302 @@ impl Peer {
         self.wait(|m| m.terrain.equipment[&id].revision > device.revision)
             .await;
     }
+
+    async fn configure_thermal(&mut self, id: u64, settings: ThermalSettings) {
+        let device = self.model.lock().await.terrain.equipment[&id].clone();
+        let (yaw, pitch) = self.point_at(&device).await;
+        self.send(ClientMessage::Equipment(
+            EquipmentCommand::ConfigureThermal {
+                id,
+                revision: device.revision,
+                yaw,
+                pitch,
+                settings,
+            },
+        ))
+        .await;
+        self.wait(|m| m.terrain.equipment[&id].revision > device.revision)
+            .await;
+    }
+}
+
+#[tokio::test]
+async fn industrial_pipe_routes_are_atomic_and_emit_graphics_fixture() {
+    tokio::time::timeout(Duration::from_secs(150), async {
+        let mut world = VoxelWorld::new(12345).unwrap();
+        for x in [-32, -16, 0] {
+            for z in [0, 16] {
+                for y in (0..WORLD_HEIGHT).step_by(16) {
+                    let origin = [x, y, z];
+                    if !world.terrain.blocks.contains_key(&origin) {
+                        assert!(world.terrain.apply_chunk(origin, &vec![AIR; 4096]));
+                    }
+                }
+            }
+        }
+        for x in -24..12 {
+            for z in 10..28 {
+                world.terrain.set([x, 80, z], STONE);
+                for y in 81..94 {
+                    world.terrain.set([x, y, z], AIR);
+                }
+            }
+        }
+        for x in -13..-5 {
+            for z in 12..22 {
+                for y in 81..83 {
+                    world.terrain.set([x, y, z], STONE);
+                }
+            }
+        }
+        // An actual wall forces the route away from a straight Manhattan run.
+        for y in 81..86 {
+            for z in 15..18 {
+                world.terrain.set([-13, y, z], STONE);
+            }
+        }
+        let (endpoint, cert) = make_server_endpoint("127.0.0.1:0".parse().unwrap()).unwrap();
+        let address = endpoint.local_addr().unwrap();
+        let manager = Arc::new(Mutex::new(world));
+        let (stop, stopped) = oneshot::channel();
+        let server = tokio::spawn(serve_endpoint(endpoint, manager.clone(), async {
+            let _ = stopped.await;
+        }));
+        let mut first = Peer::connect(address, cert.clone(), 95).await;
+        let mut second = Peer::connect(address, cert, 96).await;
+        first.teleport([-22.0, 81.0, 13.5]).await;
+        second.teleport([-22.5, 81.0, 22.5]).await;
+        tokio::time::sleep(Duration::from_millis(550)).await;
+        first.chat("/industry kit").await;
+        first
+            .wait(|m| m.inventory.iter().any(|item| item.name == PIPE_RACK_ITEM))
+            .await;
+        first.place(EquipmentKind::Tank, 0, [-21, 80, 16]).await;
+        first.wait(|m| m.terrain.equipment.len() == 1).await;
+        first.teleport([-18.5, 81.0, 13.5]).await;
+        first.place(EquipmentKind::Pump, 0, [-19, 80, 16]).await;
+        first.wait(|m| m.terrain.equipment.len() == 2).await;
+        first.teleport([-9.0, 83.0, 13.5]).await;
+        first.place(EquipmentKind::Tank, 0, [-10, 82, 16]).await;
+        first.wait(|m| m.terrain.equipment.len() == 3).await;
+        let (left, pump, right) = {
+            let m = first.model.lock().await;
+            let at = |origin| {
+                m.terrain
+                    .equipment
+                    .values()
+                    .find(|d| d.origin == origin)
+                    .unwrap()
+                    .id
+            };
+            (at([-21, 81, 16]), at([-19, 81, 16]), at([-10, 83, 16]))
+        };
+        let (start, end) = {
+            let m = first.model.lock().await;
+            (
+                PipeAnchor {
+                    id: pump,
+                    revision: m.terrain.equipment[&pump].revision,
+                    port: 1,
+                },
+                PipeAnchor {
+                    id: right,
+                    revision: m.terrain.equipment[&right].revision,
+                    port: 0,
+                },
+            )
+        };
+        let (cells, ends) = {
+            let m = first.model.lock().await;
+            let cells = game_simulation::pipe_route::plan(&m.terrain, start, end).unwrap();
+            let ends =
+                game_simulation::pipe_route::validate(&m.terrain, start, end, &cells).unwrap();
+            (cells, ends)
+        };
+        assert!(cells.len() <= MAX_PIPE_ROUTE);
+        assert!(ends.iter().any(|ends| ends[0] / 2 != ends[1] / 2));
+        assert!(cells.iter().any(|cell| cell[0] < -16) && cells.iter().any(|cell| cell[0] >= -16));
+        let rack_cell = cells
+            .iter()
+            .zip(&ends)
+            .find(|(cell, ends)| cell[1] == 81 && ends.iter().all(|face| *face != 2 && *face != 3))
+            .unwrap()
+            .0;
+        first
+            .teleport([rack_cell[0] as f32 + 0.5, 81.0, 13.5])
+            .await;
+        first
+            .place(EquipmentKind::PipeRack, 0, [rack_cell[0], 80, rack_cell[2]])
+            .await;
+        first.wait(|m| m.terrain.equipment.len() == 4).await;
+        second.wait(|m| m.terrain.equipment.len() == 4).await;
+        tokio::time::sleep(Duration::from_millis(550)).await;
+        second.chat("/industry kit").await;
+        second
+            .wait(|m| m.inventory.iter().any(|i| i.name == PIPE_ITEM))
+            .await;
+        first.select_equipment(PIPE_ITEM).await;
+        second.select_equipment(PIPE_ITEM).await;
+        first.teleport([-17.5, 81.0, 13.5]).await;
+        second.teleport([-17.5, 81.0, 19.5]).await;
+        first.begin_pipe(1, start).await;
+        second.begin_pipe(1, start).await;
+        first.teleport([-12.5, 83.0, 13.5]).await;
+        second.teleport([-12.5, 83.0, 20.5]).await;
+        let (yaw, pitch) = first.point_port(end).await;
+        let before = first.model.lock().await.inventory.clone();
+        let mut broken = cells.clone();
+        broken.push(cells[0]);
+        first
+            .send(ClientMessage::Equipment(EquipmentCommand::LayPipe {
+                request_id: 2,
+                start,
+                end,
+                cells: broken,
+                yaw,
+                pitch,
+                inventory_revision: before.revision,
+            }))
+            .await;
+        first
+            .wait(|m| {
+                m.pipe_reply
+                    .as_ref()
+                    .is_some_and(|reply| reply.request_id == 2)
+            })
+            .await;
+        assert_eq!(
+            first.model.lock().await.pipe_reply.as_ref().unwrap().stage,
+            PipeRouteStage::Rejected
+        );
+        assert_eq!(first.model.lock().await.inventory, before);
+        assert_eq!(manager.lock().await.terrain.equipment.len(), 4);
+        let first_command = EquipmentCommand::LayPipe {
+            request_id: 3,
+            start,
+            end,
+            cells: cells.clone(),
+            yaw,
+            pitch,
+            inventory_revision: before.revision,
+        };
+        let (other_yaw, other_pitch) = second.point_port(end).await;
+        let other_revision = second.model.lock().await.inventory.revision;
+        let second_command = EquipmentCommand::LayPipe {
+            request_id: 2,
+            start,
+            end,
+            cells: cells.clone(),
+            yaw: other_yaw,
+            pitch: other_pitch,
+            inventory_revision: other_revision,
+        };
+        first
+            .send(ClientMessage::Equipment(first_command.clone()))
+            .await;
+        second
+            .send(ClientMessage::Equipment(second_command.clone()))
+            .await;
+        first
+            .wait(|m| m.pipe_reply.as_ref().is_some_and(|r| r.request_id == 3))
+            .await;
+        second
+            .wait(|m| m.pipe_reply.as_ref().is_some_and(|r| r.request_id == 2))
+            .await;
+        let a = first.model.lock().await.pipe_reply.as_ref().unwrap().stage;
+        let b = second.model.lock().await.pipe_reply.as_ref().unwrap().stage;
+        assert!(matches!(
+            (a, b),
+            (PipeRouteStage::Laid, PipeRouteStage::Rejected)
+                | (PipeRouteStage::Rejected, PipeRouteStage::Laid)
+        ));
+        first
+            .wait(|m| m.terrain.equipment.len() == 4 + cells.len())
+            .await;
+        second
+            .wait(|m| m.terrain.equipment.len() == 4 + cells.len())
+            .await;
+        if a == PipeRouteStage::Laid {
+            first.wait(|m| m.inventory.revision > before.revision).await;
+        } else {
+            second.wait(|m| m.inventory.revision > other_revision).await;
+        }
+        let count = manager.lock().await.terrain.equipment.len();
+        let before_first = first.model.lock().await.inventory.clone();
+        let before_second = second.model.lock().await.inventory.clone();
+        if a == PipeRouteStage::Laid {
+            first.send(ClientMessage::Equipment(first_command)).await;
+        } else {
+            second.send(ClientMessage::Equipment(second_command)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(manager.lock().await.terrain.equipment.len(), count);
+        assert_eq!(first.model.lock().await.inventory, before_first);
+        assert_eq!(second.model.lock().await.inventory, before_second);
+        for (&cell, &ends) in cells.iter().zip(&ends) {
+            let d = first
+                .model
+                .lock()
+                .await
+                .terrain
+                .equipment
+                .values()
+                .find(|d| d.kind == EquipmentKind::Pipe && d.origin == cell)
+                .unwrap()
+                .clone();
+            assert_eq!(d.pipe_ends, Some(ends));
+        }
+        // A 50 kPa test pump must lift water through the rising, obstacle-avoiding run.
+        for (id, position, liters) in [
+            (left, [-22.0, 81.0, 13.5], 5000),
+            (right, [-9.0, 83.0, 13.5], 1500),
+        ] {
+            first.teleport(position).await;
+            let d = first.model.lock().await.terrain.equipment[&id].clone();
+            first.point_at(&d).await;
+            tokio::time::sleep(Duration::from_millis(550)).await;
+            first
+                .chat(&format!("/industry fill {id} {liters} 300"))
+                .await;
+            first.wait(|m| !m.terrain.equipment[&id].is_empty()).await;
+        }
+        first.teleport([-18.5, 81.0, 13.5]).await;
+        first.configure(pump, true, 1.0, false).await;
+        first
+            .wait(|m| {
+                m.terrain.equipment[&right]
+                    .reading
+                    .as_ref()
+                    .is_some_and(|r| r.flow_m3_s > 0.0)
+            })
+            .await;
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../target/industry-route-quic")
+            .join(uuid::Uuid::new_v4().to_string())
+            .join("world3d.bin");
+        {
+            let world = manager.lock().await;
+            world.save(&path).unwrap();
+            let restored = VoxelWorld::load(&path).unwrap();
+            for (&id, d) in &world.terrain.equipment {
+                assert_eq!(restored.terrain.equipment[&id], facts(d));
+            }
+            assert_eq!(restored.industry_ledger(), world.industry_ledger());
+        }
+        std::fs::write(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../target/industry-route-fixture-path.txt"),
+            path.to_string_lossy().replace('\\', "/"),
+        )
+        .unwrap();
+        println!("INDUSTRY_ROUTE_FIXTURE={}", path.display());
+        drop(first);
+        drop(second);
+        let _ = stop.send(());
+        server.await.unwrap().unwrap();
+    })
+    .await
+    .expect("industrial route scenario timed out");
 }
 
 impl Drop for Peer {
@@ -601,4 +960,313 @@ async fn industrial_flow_controls_conserve_and_emit_graphics_fixture() {
     })
     .await
     .expect("industrial flow scenario timed out");
+}
+
+#[tokio::test]
+async fn industrial_thermal_controls_sync_and_emit_graphics_fixture() {
+    tokio::time::timeout(Duration::from_secs(150), async {
+        let mut world = VoxelWorld::new(12345).unwrap();
+        for x in [-16, 0] {
+            for z in [0, 16] {
+                for y in (0..WORLD_HEIGHT).step_by(16) {
+                    let origin = [x, y, z];
+                    if !world.terrain.blocks.contains_key(&origin) {
+                        assert!(world.terrain.apply_chunk(origin, &vec![AIR; 4096]));
+                    }
+                }
+            }
+        }
+        for x in -10..12 {
+            for z in 10..29 {
+                world.terrain.set([x, 80, z], STONE);
+                for y in 81..92 {
+                    world.terrain.set([x, y, z], AIR);
+                }
+            }
+        }
+        let (endpoint, cert) = make_server_endpoint("127.0.0.1:0".parse().unwrap()).unwrap();
+        let address = endpoint.local_addr().unwrap();
+        let manager = Arc::new(Mutex::new(world));
+        let (stop, stopped) = oneshot::channel();
+        let server = tokio::spawn(serve_endpoint(endpoint, manager.clone(), async {
+            let _ = stopped.await;
+        }));
+        let mut first = Peer::connect(address, cert.clone(), 93).await;
+        let mut second = Peer::connect(address, cert, 94).await;
+        first.teleport([0.5, 81.0, 13.5]).await;
+        second.teleport([8.5, 81.0, 24.5]).await;
+        for _ in 0..2 {
+            tokio::time::sleep(Duration::from_millis(550)).await;
+            first.chat("/industry kit").await;
+        }
+        first
+            .wait(|m| {
+                m.inventory
+                    .iter()
+                    .any(|i| i.name == TANK_ITEM && i.quantity >= 4)
+            })
+            .await;
+        let mut ids = std::collections::BTreeMap::new();
+        for z in [16, 18] {
+            let stand_z = if z == 16 { 13.5 } else { 21.5 };
+            for (x, kind) in [
+                (-4, EquipmentKind::Tank),
+                (-2, EquipmentKind::Pump),
+                (-1, EquipmentKind::Pipe),
+                (2, EquipmentKind::Pipe),
+                (3, EquipmentKind::Tank),
+            ] {
+                first.teleport([x as f32 + 0.5, 81.0, stand_z]).await;
+                first.place(kind, 0, [x, 80, z]).await;
+                first
+                    .wait(|m| m.terrain.equipment.values().any(|e| e.origin == [x, 81, z]))
+                    .await;
+                let id = first
+                    .model
+                    .lock()
+                    .await
+                    .terrain
+                    .equipment
+                    .values()
+                    .find(|e| e.origin == [x, 81, z])
+                    .unwrap()
+                    .id;
+                ids.insert((x, z), id);
+            }
+        }
+        first.teleport([0.5, 81.0, 13.5]).await;
+        first
+            .place(EquipmentKind::HeatExchanger, 0, [0, 80, 16])
+            .await;
+        first
+            .wait(|m| {
+                m.terrain
+                    .equipment
+                    .values()
+                    .any(|e| e.kind == EquipmentKind::HeatExchanger)
+            })
+            .await;
+        let hx = first
+            .model
+            .lock()
+            .await
+            .terrain
+            .equipment
+            .values()
+            .find(|e| e.kind == EquipmentKind::HeatExchanger)
+            .unwrap()
+            .id;
+        first.teleport([-5.5, 81.0, 25.5]).await;
+        first.place(EquipmentKind::Vessel, 0, [-6, 80, 22]).await;
+        first.wait(|m| m.terrain.equipment.len() == 12).await;
+        let vessel = first
+            .model
+            .lock()
+            .await
+            .terrain
+            .equipment
+            .values()
+            .find(|e| e.kind == EquipmentKind::Vessel)
+            .unwrap()
+            .id;
+        second.wait(|m| m.terrain.equipment.len() == 12).await;
+        for (z, temperature) in [(16, 350.0), (18, 295.0)] {
+            let stand_z = if z == 16 { 13.5 } else { 21.5 };
+            for (x, liters) in [(-4, 4000), (3, 2000)] {
+                first.teleport([x as f32 + 1.0, 81.0, stand_z]).await;
+                let id = ids[&(x, z)];
+                let device = first.model.lock().await.terrain.equipment[&id].clone();
+                first.point_at(&device).await;
+                tokio::time::sleep(Duration::from_millis(550)).await;
+                first
+                    .chat(&format!("/industry fill {id} {liters} {temperature}"))
+                    .await;
+                first.wait(|m| !m.terrain.equipment[&id].is_empty()).await;
+            }
+        }
+        first.teleport([-5.0, 81.0, 25.5]).await;
+        let device = first.model.lock().await.terrain.equipment[&vessel].clone();
+        first.point_at(&device).await;
+        tokio::time::sleep(Duration::from_millis(550)).await;
+        first
+            .chat(&format!("/industry charge {vessel} 1000 1000 320"))
+            .await;
+        first
+            .wait(|m| m.terrain.equipment[&vessel].contents.len() == 2)
+            .await;
+        first
+            .wait(|m| {
+                m.terrain.equipment[&vessel]
+                    .reading
+                    .as_ref()
+                    .and_then(|r| r.thermal.as_ref())
+                    .is_some_and(|r| r.quality == ReadingQuality::Available)
+            })
+            .await;
+        let mixture = first.model.lock().await.terrain.equipment[&vessel].clone();
+        let phase = mixture.reading.as_ref().unwrap().thermal.as_ref().unwrap();
+        for i in 0..2 {
+            assert!((phase.liquid_moles[i] + phase.vapor_moles[i] - 1000.0).abs() < 1e-5);
+        }
+        assert!(phase.vapor_fraction.is_some_and(|v| v > 0.0 && v < 1.0));
+        first.teleport([0.5, 81.0, 13.5]).await;
+        first
+            .configure_thermal(
+                hx,
+                ThermalSettings {
+                    mode: HeatControlMode::Manual,
+                    duty_fraction: 0.75,
+                    target_temperature_k: 330.0,
+                },
+            )
+            .await;
+        for z in [16, 18] {
+            first
+                .teleport([-1.5, 81.0, if z == 16 { 13.5 } else { 21.5 }])
+                .await;
+            first.configure(ids[&(-2, z)], true, 1.0, false).await;
+        }
+        first
+            .wait(|m| {
+                m.terrain.equipment[&hx]
+                    .reading
+                    .as_ref()
+                    .and_then(|r| r.thermal.as_ref())
+                    .is_some_and(|r| r.heat_w.abs() > 1.0)
+            })
+            .await;
+        second
+            .wait(|m| {
+                m.terrain.equipment[&hx]
+                    .reading
+                    .as_ref()
+                    .and_then(|r| r.thermal.as_ref())
+                    .is_some_and(|r| r.heat_w.abs() > 1.0)
+            })
+            .await;
+        let sample_tick = {
+            let model = first.model.lock().await;
+            let reading = model.terrain.equipment[&hx]
+                .reading
+                .as_ref()
+                .unwrap()
+                .thermal
+                .as_ref()
+                .unwrap();
+            assert_eq!(reading.quality, ReadingQuality::Available);
+            assert!(reading
+                .inlet_temperature_k
+                .iter()
+                .chain(&reading.outlet_temperature_k)
+                .all(Option::is_some));
+            assert!(reading.flow_m3_s.iter().all(|q| q.abs() > 1e-9));
+            reading.sampled_at_tick
+        };
+        first
+            .wait(|m| {
+                m.terrain.equipment[&hx]
+                    .reading
+                    .as_ref()
+                    .and_then(|r| r.thermal.as_ref())
+                    .is_some_and(|r| r.sampled_at_tick > sample_tick)
+            })
+            .await;
+        // Independent stream inventories remain fixed in spite of energy transfer.
+        {
+            let world = manager.lock().await;
+            for z in [16, 18] {
+                let n: f64 = [-4, 3]
+                    .into_iter()
+                    .map(|x| server::process::water_moles(&world.terrain.equipment[&ids[&(x, z)]]))
+                    .sum();
+                assert!((n - 6000.0 / 0.01801528).abs() < 1e-5);
+            }
+            assert_eq!(world.terrain.equipment[&vessel].contents, mixture.contents);
+        }
+        first.teleport([0.5, 81.0, 13.5]).await;
+        first
+            .configure_thermal(
+                hx,
+                ThermalSettings {
+                    mode: HeatControlMode::OutletTemperature,
+                    duty_fraction: 1.0,
+                    target_temperature_k: 340.0,
+                },
+            )
+            .await;
+        let revision = first.model.lock().await.terrain.equipment[&hx].revision;
+        second.teleport([1.5, 81.0, 13.5]).await;
+        let device = second.model.lock().await.terrain.equipment[&hx].clone();
+        let (yaw, pitch) = second.point_at(&device).await;
+        second
+            .send(ClientMessage::Equipment(
+                EquipmentCommand::ConfigureThermal {
+                    id: hx,
+                    revision: revision - 1,
+                    yaw,
+                    pitch,
+                    settings: ThermalSettings::default(),
+                },
+            ))
+            .await;
+        second.wait(|m| !m.container_error.is_empty()).await;
+        assert_eq!(
+            manager.lock().await.terrain.equipment[&hx]
+                .thermal
+                .as_ref()
+                .unwrap()
+                .mode,
+            HeatControlMode::OutletTemperature
+        );
+        second.teleport([8.5, 81.0, 24.5]).await;
+        for z in [16, 18] {
+            first
+                .teleport([-1.5, 81.0, if z == 16 { 13.5 } else { 21.5 }])
+                .await;
+            first.configure(ids[&(-2, z)], false, 1.0, false).await;
+        }
+        first
+            .wait(|m| {
+                m.terrain.equipment[&hx]
+                    .reading
+                    .as_ref()
+                    .and_then(|r| r.thermal.as_ref())
+                    .is_some_and(|r| r.heat_w.abs() < 1e-9)
+            })
+            .await;
+        assert_eq!(
+            first.model.lock().await.terrain.equipment[&hx]
+                .reading
+                .as_ref()
+                .unwrap()
+                .thermal
+                .as_ref()
+                .unwrap()
+                .quality,
+            ReadingQuality::NoFlow
+        );
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../target/industry-thermal-quic")
+            .join(uuid::Uuid::new_v4().to_string())
+            .join("world3d.bin");
+        {
+            let world = manager.lock().await;
+            world.save(&path).unwrap();
+            let restored = VoxelWorld::load(&path).unwrap();
+            for (&id, expected) in &world.terrain.equipment {
+                assert_eq!(restored.terrain.equipment[&id], facts(expected));
+            }
+            assert_eq!(restored.industry_ledger(), world.industry_ledger());
+        }
+        let pointer = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../target/industry-thermal-fixture-path.txt");
+        std::fs::write(pointer, path.to_string_lossy().replace('\\', "/")).unwrap();
+        println!("INDUSTRY_THERMAL_FIXTURE={}", path.display());
+        drop(first);
+        drop(second);
+        let _ = stop.send(());
+        server.await.unwrap().unwrap();
+    })
+    .await
+    .expect("industrial thermal scenario timed out");
 }

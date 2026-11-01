@@ -2,15 +2,17 @@
 ---cargo
 [package]
 edition = "2024"
+[dependencies]
+serde_json = "1"
 ---
-// std-only Cargo script; game crates continue to use Rust stable.
+// Cargo scripts use nightly; game crates continue to use Rust stable.
+mod support;
 use std::{
     env,
     error::Error,
     io::{BufRead, BufReader},
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
-    path::PathBuf,
-    process::{Child, Command, Stdio},
+    process::{Command, Stdio},
     sync::{
         atomic::{AtomicBool, Ordering},
         mpsc,
@@ -18,6 +20,7 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+use support::{Authority as Server, hidden};
 
 static INTERRUPTED: AtomicBool = AtomicBool::new(false);
 
@@ -31,36 +34,6 @@ unsafe extern "system" fn on_console_event(event: u32) -> i32 {
     }
 }
 
-fn hidden(command: &mut Command) -> &mut Command {
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW for console helpers
-    }
-    command
-}
-
-struct Server(Child);
-impl Server {
-    fn stop(&mut self) -> Result<(), Box<dyn Error>> {
-        drop(self.0.stdin.take());
-        let status = self.0.wait()?;
-        if !status.success() {
-            return Err(
-                format!("Server exited with {status}; inspect the save error above").into(),
-            );
-        }
-        Ok(())
-    }
-}
-impl Drop for Server {
-    fn drop(&mut self) {
-        // Never terminate the authority forcibly: let it finish its final save.
-        drop(self.0.stdin.take());
-        let _ = self.0.wait();
-    }
-}
-
 fn main() -> Result<(), Box<dyn Error>> {
     if env::args().any(|arg| arg == "--help") {
         println!(
@@ -68,10 +41,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         );
         return Ok(());
     }
-    let repo = env::current_dir()?;
-    if !repo.join("scripts/godot.ps1").is_file() {
-        return Err("Run from the repository root (or use just dev)".into());
-    }
+    let repo = support::repo_root(env!("CARGO_MANIFEST_PATH"))?;
+    env::set_current_dir(&repo)?;
+    let godot = support::Godot::load()?;
     let mut address: SocketAddr = env::var("CDDA_BIND")
         .unwrap_or_else(|_| "127.0.0.1:9876".into())
         .parse()?;
@@ -96,29 +68,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         return Err("Build failed".into());
     }
     // Cargo honors CARGO_TARGET_DIR and workspace configuration; query its target path.
-    let metadata = Command::new("cargo")
-        .args(["metadata", "--no-deps", "--format-version", "1"])
-        .env_remove("RUSTUP_TOOLCHAIN")
-        .output()?;
-    if !metadata.status.success() {
-        return Err("Cargo metadata failed".into());
-    }
-    // Reuse PowerShell's JSON decoder rather than adding script dependencies.
-    let mut decoder = hidden(Command::new("powershell").args([
-        "-NoProfile",
-        "-Command",
-        "($input | Out-String | ConvertFrom-Json).target_directory",
-    ]))
-    .stdin(Stdio::piped())
-    .stdout(Stdio::piped())
-    .spawn()?;
-    use std::io::Write;
-    decoder.stdin.take().unwrap().write_all(&metadata.stdout)?;
-    let decoded = decoder.wait_with_output()?;
-    if !decoded.status.success() {
-        return Err("Cannot read Cargo target directory".into());
-    }
-    let target = PathBuf::from(String::from_utf8(decoded.stdout)?.trim());
+    let target = support::target_directory(&repo)?;
 
     #[cfg(windows)]
     {
@@ -168,25 +118,18 @@ fn main() -> Result<(), Box<dyn Error>> {
         thread::sleep(Duration::from_millis(50));
     }
     println!("Connecting client to {address}. Closing the client saves and stops this server.");
-    let mut client = hidden(
-        Command::new("powershell")
-            .args([
-                "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-File",
-                "scripts/godot.ps1",
-                "run",
-                "--connect",
-                "--server",
-                &address.to_string(),
-                "--cert",
-            ])
-            .arg(certificate)
-            .args(env::args_os().skip(1)),
-    )
-    .env_remove("RUSTUP_TOOLCHAIN")
-    .spawn()?;
+    let mut client = godot
+        .command(&repo.join("godot"))?
+        .args([
+            "--",
+            "--connect",
+            "--server",
+            &address.to_string(),
+            "--cert",
+        ])
+        .arg(certificate)
+        .args(env::args_os().skip(1))
+        .spawn()?;
     let result = loop {
         if let Some(status) = client.try_wait()? {
             break status.success();

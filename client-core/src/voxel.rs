@@ -6,6 +6,8 @@ pub struct Client3d {
     pub terrain: Grid,
     pub revision: u64,
     pub equipment_revision: u64,
+    pub equipment_geometry_revision: u64,
+    pub pipe_reply: Option<PipeRouteReply>,
     equipment_server_revision: u64,
     authoritative_body: Body,
     pub dirty_chunks: BTreeSet<[i32; 3]>,
@@ -31,6 +33,8 @@ impl Default for Client3d {
             terrain: Grid::unknown(),
             revision: 0,
             equipment_revision: 0,
+            equipment_geometry_revision: 0,
+            pipe_reply: None,
             equipment_server_revision: 0,
             authoritative_body: Body::default(),
             dirty_chunks: BTreeSet::new(),
@@ -81,6 +85,7 @@ impl Client3d {
                 });
                 if before != self.terrain.equipment.len() {
                     self.equipment_revision += 1;
+                    self.equipment_geometry_revision += 1;
                 }
                 self.revision += 1;
                 for y in (0..WORLD_HEIGHT).step_by(16) {
@@ -128,13 +133,22 @@ impl Client3d {
                                 old.kind != device.kind
                                     || old.origin != device.origin
                                     || old.axis != device.axis
+                                    || old.pipe_ends != device.pipe_ends
                             })
                         });
                     self.terrain.equipment = next;
                     self.equipment_revision += 1;
+                    if geometry_changed {
+                        self.equipment_geometry_revision += 1;
+                    }
                     if self.ready && geometry_changed {
                         self.replay_inputs();
                     }
+                }
+            }
+            ServerMessage::PipeRouteReply(reply) => {
+                if reply.valid() {
+                    self.pipe_reply = Some(reply);
                 }
             }
             ServerMessage::World3d(s) => {
@@ -236,6 +250,8 @@ mod tests {
             enabled: false,
             opening: 1.0,
             pump_reversed: false,
+            thermal: None,
+            pipe_ends: None,
             reading: None,
         };
         m.apply(ServerMessage::EquipmentState {
@@ -277,6 +293,8 @@ mod tests {
             enabled: false,
             opening: 1.0,
             pump_reversed: false,
+            thermal: None,
+            pipe_ends: None,
             reading: None,
         };
         m.apply(ServerMessage::EquipmentState {
