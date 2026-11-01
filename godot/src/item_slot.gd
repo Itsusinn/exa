@@ -60,11 +60,36 @@ func _draw() -> void:
 			draw_rect(Rect2(center-Vector2(11,15),Vector2(3,26)),Color("4a4f46"))
 			draw_rect(Rect2(center+Vector2(8,-15),Vector2(3,26)),Color("4a4f46"))
 			draw_rect(Rect2(center-Vector2(2,10),Vector2(4,6)),Palette.MUTED)
+		if item.name in ["储罐","管道","测试泵","阀门"]:
+			draw_rect(Rect2(center-Vector2(16,16),Vector2(32,28)),Color("202728"))
+			if item.name == "储罐":
+				draw_rect(Rect2(center-Vector2(11,12),Vector2(22,23)),Color("87969b"))
+				draw_ellipse_icon(center-Vector2(0,12),Vector2(11,4),Color("b3bec1"))
+				draw_ellipse_icon(center+Vector2(0,11),Vector2(11,4),Color("62757c"))
+			else:
+				draw_line(center-Vector2(13,0),center+Vector2(13,0),Color("a8b5ba"),9)
+				draw_line(center-Vector2(12,6),center-Vector2(12,-6),Color("62757c"),3)
+				draw_line(center+Vector2(12,-6),center+Vector2(12,6),Color("62757c"),3)
+				if item.name == "测试泵":
+					draw_circle(center,9,Color("527a6b"))
+					draw_colored_polygon(PackedVector2Array([center+Vector2(-3,-5),center+Vector2(5,0),center+Vector2(-3,5)]),Color("ced9d4"))
+				elif item.name == "阀门":
+					draw_colored_polygon(PackedVector2Array([center+Vector2(-8,-7),center,center+Vector2(-8,7)]),Color("b18a54"))
+					draw_colored_polygon(PackedVector2Array([center+Vector2(8,-7),center+Vector2(8,7),center]),Color("b18a54"))
+					draw_line(center,center-Vector2(0,11),Color("c5b091"),2)
+					draw_line(center-Vector2(6,11),center+Vector2(6,-11),Color("c5b091"),3)
 		var count := str(item.quantity)
 		var width := font.get_string_size(count,HORIZONTAL_ALIGNMENT_LEFT,-1,16).x
 		draw_string_outline(font,Vector2(size.x-width-4,size.y-5),count,HORIZONTAL_ALIGNMENT_LEFT,-1,16,4,Color("101318"))
 		draw_string(font,Vector2(size.x-width-4,size.y-5),count,HORIZONTAL_ALIGNMENT_LEFT,-1,16,Color.WHITE)
 	if not number.is_empty(): draw_string(font,Vector2(5,14),number,HORIZONTAL_ALIGNMENT_LEFT,-1,12,Color("bfc9d1"))
+
+func draw_ellipse_icon(center: Vector2, radius: Vector2, color: Color) -> void:
+	var points := PackedVector2Array()
+	for i in range(20):
+		var angle := TAU * i / 20.0
+		points.append(center+Vector2(cos(angle),sin(angle))*radius)
+	draw_colored_polygon(points,color)
 
 func _gui_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton and event.pressed and event.button_index in [MOUSE_BUTTON_LEFT,MOUSE_BUTTON_RIGHT]:

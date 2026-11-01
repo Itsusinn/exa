@@ -1,6 +1,145 @@
-use crate::mesh::{Mesh, NORMALS};
+use crate::mesh::{Mesh, Vertex, NORMALS};
 use game_client_core::voxel::Client3d;
+pub use game_simulation::equipment::ports as equipment_ports;
 use protocol::*;
+
+/// Reusable local-space equipment mesh; instances carry their authoritative origin.
+pub fn equipment_shape(kind: EquipmentKind, axis: u8) -> Mesh {
+    let mut mesh = Mesh::default();
+    let steel = [0.57, 0.62, 0.64];
+    let dark = [0.27, 0.31, 0.33];
+    match kind {
+        EquipmentKind::Tank => {
+            cylinder(&mut mesh, [1.0, 0.0, 1.0], 1, 2.85, 0.9, steel);
+            // Nozzles align with the shared port centres; all pieces stay inside occupied cells.
+            cylinder(&mut mesh, [0.0, 0.5, 0.5], 0, 0.4, 0.125, dark);
+            cylinder(&mut mesh, [1.6, 0.5, 0.5], 0, 0.4, 0.125, dark);
+        }
+        EquipmentKind::Pipe => {
+            let axis = usize::from(axis.min(2));
+            let mut origin = [0.5; 3];
+            origin[axis] = 0.0;
+            // Disjoint axial sections avoid coplanar colour-band overlays. Only
+            // the two exterior ends are capped; internal seams have no faces.
+            cylinder_section(&mut mesh, origin, axis, 0.04, 0.125, dark, [true, false]);
+            origin[axis] = 0.04;
+            cylinder_section(
+                &mut mesh,
+                origin,
+                axis,
+                0.96 - 0.04,
+                0.125,
+                steel,
+                [false, false],
+            );
+            origin[axis] = 0.96;
+            cylinder_section(&mut mesh, origin, axis, 0.04, 0.125, dark, [false, true]);
+        }
+        EquipmentKind::Pump | EquipmentKind::Valve => {
+            let axis = usize::from(axis.min(2));
+            let mut origin = [0.5; 3];
+            origin[axis] = 0.0;
+            cylinder(&mut mesh, origin, axis, 0.25, 0.125, dark);
+            origin[axis] = 0.75;
+            cylinder(&mut mesh, origin, axis, 0.25, 0.125, dark);
+            origin[axis] = 0.25;
+            let color = if kind == EquipmentKind::Pump {
+                [0.32, 0.48, 0.42]
+            } else {
+                [0.55, 0.40, 0.24]
+            };
+            cylinder(&mut mesh, origin, axis, 0.5, 0.28, color);
+            // A raised longitudinal ridge identifies the shaft direction without
+            // coplanar decals; dynamic controls remain separate from this mesh.
+            let side = (axis + 1) % 3;
+            let mut position = [0.46; 3];
+            let mut size = [0.08; 3];
+            position[axis] = 0.36;
+            position[side] = 0.74;
+            size[side] = 0.06;
+            size[axis] = 0.28;
+            mesh.cuboid(position, size, steel, 0);
+        }
+    }
+    mesh
+}
+
+fn cylinder(
+    mesh: &mut Mesh,
+    origin: [f32; 3],
+    axis: usize,
+    length: f32,
+    radius: f32,
+    color: [f32; 3],
+) {
+    cylinder_section(mesh, origin, axis, length, radius, color, [true, true]);
+}
+
+fn cylinder_section(
+    mesh: &mut Mesh,
+    origin: [f32; 3],
+    axis: usize,
+    length: f32,
+    radius: f32,
+    color: [f32; 3],
+    caps: [bool; 2],
+) {
+    // Large tank silhouettes need more facets than narrow inline fittings.
+    // Shading is smooth independently of tessellation; cap vertices stay separate.
+    let segments = if radius > 0.5 { 96 } else { 32 };
+    let u = (axis + 1) % 3;
+    let v = (axis + 2) % 3;
+    let point = |angle: f32, along: f32| {
+        let mut p = origin;
+        p[axis] += along;
+        p[u] += angle.cos() * radius;
+        p[v] += angle.sin() * radius;
+        p
+    };
+    let radial = |angle: f32| {
+        let mut normal = [0.0; 3];
+        normal[u] = angle.cos();
+        normal[v] = angle.sin();
+        normal
+    };
+    for i in 0..segments {
+        let a = i as f32 * std::f32::consts::TAU / segments as f32;
+        let b = (i + 1) as f32 * std::f32::consts::TAU / segments as f32;
+        let points = [
+            point(a, 0.0),
+            point(a, length),
+            point(b, length),
+            point(b, 0.0),
+        ];
+        let normals = [radial(a), radial(a), radial(b), radial(b)];
+        let uv = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+        // Match Mesh::face winding, but carry the circular normal at each vertex.
+        // Adjacent facets share shading normals while the separate caps stay flat.
+        mesh.vertices.extend([0, 2, 1, 0, 3, 2].map(|index| Vertex {
+            position: points[index],
+            normal: normals[index],
+            color,
+            uv: uv[index],
+            pattern: 0,
+        }));
+        for (end, (along, sign)) in [(0.0, -1.0), (length, 1.0)].into_iter().enumerate() {
+            if !caps[end] {
+                continue;
+            }
+            let mut centre = origin;
+            centre[axis] += along;
+            let mut normal = [0.0; 3];
+            normal[axis] = sign;
+            let (a, b) = if sign < 0.0 { (a, b) } else { (b, a) };
+            mesh.face(
+                [centre, point(a, along), point(b, along), centre],
+                normal,
+                color,
+                0,
+            );
+        }
+    }
+}
 
 pub fn terrain_chunk(model: &Client3d, origin: [i32; 3]) -> Mesh {
     let mut mesh = Mesh::default();
@@ -159,6 +298,180 @@ pub fn actors(model: &Client3d) -> Mesh {
 mod tests {
     use super::*;
     use game_simulation::grid::Grid;
+
+    #[test]
+    fn pump_and_valve_meshes_stay_inside_shared_collision_envelopes() {
+        for kind in [EquipmentKind::Pump, EquipmentKind::Valve] {
+            for axis in 0..3 {
+                let device = EquipmentSnapshot {
+                    id: 1,
+                    revision: 0,
+                    kind,
+                    origin: [0, 1, 0],
+                    axis,
+                    contents: vec![],
+                    internal_energy_j: 0.0,
+                    enabled: false,
+                    opening: 1.0,
+                    pump_reversed: false,
+                    reading: None,
+                };
+                let boxes = game_simulation::equipment::collision_boxes(&device);
+                let mesh = equipment_shape(kind, axis);
+                assert!(!mesh.vertices.is_empty());
+                for vertex in mesh.vertices {
+                    let mut point = vertex.position;
+                    point[1] += 1.0;
+                    assert!(
+                        boxes.iter().any(|shape| (0..3).all(|i| {
+                            point[i] >= shape.min[i] - 1e-6 && point[i] <= shape.max[i] + 1e-6
+                        })),
+                        "{kind:?} axis={axis}: visible surface outside shared collision {point:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn pipe_side_bands_partition_length_without_overlays_or_internal_caps() {
+        for axis in 0..3 {
+            let mesh = equipment_shape(EquipmentKind::Pipe, axis as u8);
+            let mut side_normals: Vec<[f32; 3]> = vec![];
+            let mut cap_count = [0; 2];
+            for tri in mesh.vertices.as_chunks::<3>().0 {
+                let normal = tri[0].normal;
+                if normal[axis].abs() < 0.5 {
+                    if !side_normals.contains(&normal) {
+                        side_normals.push(normal);
+                    }
+                } else {
+                    let end = usize::from(normal[axis] > 0.0);
+                    assert!(
+                        tri.iter()
+                            .all(|vertex| (vertex.position[axis] - end as f32).abs() < 1e-6),
+                        "axis={axis}: cap buried inside pipe"
+                    );
+                    cap_count[end] += 1;
+                }
+            }
+            assert_eq!(side_normals.len(), 32);
+            assert_eq!(cap_count, [64, 64]); // cap fan plus degenerate quad halves
+            for normal in side_normals {
+                let mut spans: Vec<(f32, f32)> = mesh
+                    .vertices
+                    .as_chunks::<3>()
+                    .0
+                    .iter()
+                    .filter(|tri| tri[0].normal == normal)
+                    .map(|tri| {
+                        (
+                            tri.iter()
+                                .map(|v| v.position[axis])
+                                .fold(f32::INFINITY, f32::min),
+                            tri.iter()
+                                .map(|v| v.position[axis])
+                                .fold(f32::NEG_INFINITY, f32::max),
+                        )
+                    })
+                    .collect();
+                spans.sort_by(|a, b| a.0.total_cmp(&b.0));
+                assert_eq!(spans.len(), 6, "each facet has three disjoint quads");
+                for (index, (start, end)) in [(0.0, 0.04), (0.04, 0.96), (0.96, 1.0)]
+                    .into_iter()
+                    .enumerate()
+                {
+                    for span in &spans[index * 2..index * 2 + 2] {
+                        assert!(
+                            (span.0 - start).abs() < 1e-6 && (span.1 - end).abs() < 1e-6,
+                            "axis={axis}: side span {span:?} overlaps or leaves a gap"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn cylinder_surfaces_keep_outward_winding_smooth_sides_and_hard_caps() {
+        let origin = [4.0, -3.0, 7.0];
+        let dot = |a: [f32; 3], b: [f32; 3]| (0..3).map(|i| a[i] * b[i]).sum::<f32>();
+        for axis in 0..3 {
+            let mut mesh = Mesh::default();
+            cylinder(&mut mesh, origin, axis, 2.85, 0.9, [1.0; 3]);
+            let mut counts = [0; 3]; // side, bottom, top
+            for tri in mesh.vertices.as_chunks::<3>().0 {
+                let a: [f32; 3] = std::array::from_fn(|i| tri[1].position[i] - tri[0].position[i]);
+                let b: [f32; 3] = std::array::from_fn(|i| tri[2].position[i] - tri[0].position[i]);
+                let cross = [
+                    a[1] * b[2] - a[2] * b[1],
+                    a[2] * b[0] - a[0] * b[2],
+                    a[0] * b[1] - a[1] * b[0],
+                ];
+                let area2 = dot(cross, cross).sqrt();
+                // A cap fan currently occupies one half of each Mesh::face quad.
+                if area2 < 1e-8 {
+                    continue;
+                }
+                let normal = tri[0].normal;
+                assert!(
+                    dot(cross, normal) / area2 > 0.999,
+                    "axis={axis}, tri={:?}",
+                    tri.map(|v| v.position)
+                );
+                let mut outward: [f32; 3] = std::array::from_fn(|i| {
+                    tri.iter().map(|v| v.position[i]).sum::<f32>() / 3.0 - origin[i]
+                });
+                if normal[axis] < -0.5 {
+                    counts[1] += 1;
+                    assert!(tri
+                        .iter()
+                        .all(|v| (v.position[axis] - origin[axis]).abs() < 1e-6));
+                    outward = [0.0; 3];
+                    outward[axis] = -1.0;
+                    assert!(tri.iter().all(|vertex| vertex.normal == outward));
+                } else if normal[axis] > 0.5 {
+                    counts[2] += 1;
+                    assert!(tri
+                        .iter()
+                        .all(|v| (v.position[axis] - origin[axis] - 2.85).abs() < 1e-6));
+                    outward = [0.0; 3];
+                    outward[axis] = 1.0;
+                    assert!(tri.iter().all(|vertex| vertex.normal == outward));
+                } else {
+                    counts[0] += 1;
+                    outward[axis] = 0.0;
+                    for vertex in tri {
+                        let mut radial: [f32; 3] =
+                            std::array::from_fn(|i| (vertex.position[i] - origin[i]) / 0.9);
+                        radial[axis] = 0.0;
+                        assert!((dot(vertex.normal, vertex.normal) - 1.0).abs() < 1e-6);
+                        assert!(
+                            (0..3).all(|i| (vertex.normal[i] - radial[i]).abs() < 2e-6),
+                            "side shading must follow the round surface at each vertex"
+                        );
+                    }
+                    let mut chord_mid: [f32; 3] = std::array::from_fn(|i| {
+                        (tri[0].position[i] + tri[1].position[i]) * 0.5 - origin[i]
+                    });
+                    chord_mid[axis] = 0.0;
+                    assert!(
+                        0.9 - dot(chord_mid, chord_mid).sqrt() < 0.001,
+                        "tank silhouette facets must deviate less than 1 mm from its radius"
+                    );
+                }
+                assert!(
+                    dot(cross, outward) > 0.0,
+                    "axis={axis}: front face points into cylinder"
+                );
+                assert!(
+                    dot(normal, outward) > 0.0,
+                    "axis={axis}: shading normal points into cylinder"
+                );
+            }
+            assert_eq!(counts, [192, 96, 96], "axis={axis}: missing exterior faces");
+        }
+    }
 
     #[test]
     fn cached_neighbors_match_grid_queries_across_signed_edges_water_and_unloads() {

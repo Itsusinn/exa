@@ -1,5 +1,5 @@
 param(
-    [ValidateSet('build','run','demo','editor','smoke','export-debug','export-release','multiplayer','containers','editing','streaming','commands','streaming-perf','ecology','structures','natural-spawn')]
+    [ValidateSet('build','run','demo','editor','smoke','export-debug','export-release','multiplayer','containers','editing','industry','industry-graphics','industry-flow','industry-flow-graphics','streaming','commands','streaming-perf','ecology','structures','natural-spawn')]
     [string]$Action = 'run',
     [Parameter(ValueFromRemainingArguments=$true)]
     [string[]]$GameArgs
@@ -40,6 +40,22 @@ function Build-Extension([bool]$Release) {
 
 Build-Extension $false
 if ($Action -eq 'build') { exit 0 }
+if ($Action -eq 'industry') {
+    & $godotExe --headless --path godot --script res://tests/industry.gd
+    exit $LASTEXITCODE
+}
+if ($Action -eq 'industry-graphics') {
+    & $godotExe --path godot --script res://tests/industry.gd
+    exit $LASTEXITCODE
+}
+if ($Action -in @('industry-flow','industry-flow-graphics')) {
+    & cargo test -p client --test industry --jobs 2 industrial_flow_controls_conserve_and_emit_graphics_fixture
+    if ($LASTEXITCODE -ne 0) { throw 'Industrial flow fixture failed.' }
+    $flowArgs = @('--path','godot','--script','res://tests/industry_flow.gd')
+    if ($Action -eq 'industry-flow') { $flowArgs = @('--headless') + $flowArgs }
+    & $godotExe @flowArgs
+    exit $LASTEXITCODE
+}
 if ($Action -eq 'natural-spawn') {
     & $godotExe --path godot --script res://tests/natural_spawn.gd
     exit $LASTEXITCODE

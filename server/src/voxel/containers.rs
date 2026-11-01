@@ -40,7 +40,7 @@ pub(super) fn backup_version(path: &Path, bytes: &[u8], version: u32) -> Result<
             Ok(mut file) => {
                 // Keep an independent copy of every immutable archive directory,
                 // not only a manifest that still depends on the live directories.
-                for extension in ["chunks", "players", "entities"] {
+                for extension in ["chunks", "players", "entities", "industry"] {
                     let source = path.with_extension(extension);
                     if !source.exists() {
                         continue;
@@ -81,7 +81,7 @@ pub(super) fn backup_version(path: &Path, bytes: &[u8], version: u32) -> Result<
 }
 
 fn archive_backup_complete(path: &Path, backup: &Path) -> Result<bool> {
-    for extension in ["chunks", "players", "entities"] {
+    for extension in ["chunks", "players", "entities", "industry"] {
         let source = path.with_extension(extension);
         if !source.exists() {
             continue;
@@ -559,6 +559,7 @@ mod tests {
             chunk_archive: None,
             entity_archive: None,
             generated_columns: None,
+            industry_archive: None,
         };
         let mut bytes = b"DNG3D001".to_vec();
         bytes.extend(rmp_serde::to_vec(&saved).unwrap());

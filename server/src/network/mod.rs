@@ -10,6 +10,8 @@ use tracing_futures::Instrument;
 use protocol::{ClientMessage, ServerMessage};
 
 use crate::voxel::VoxelWorld;
+type IndustryJob =
+    tokio::task::JoinHandle<(u64, std::result::Result<crate::process::FlowStep, String>)>;
 
 #[instrument(level = "info")]
 pub fn make_server_endpoint(addr: std::net::SocketAddr) -> Result<(Endpoint, Vec<u8>)> {
@@ -72,6 +74,9 @@ pub async fn serve_endpoint(
     let mut checkpoint = tokio::time::interval(std::time::Duration::from_secs(30));
     checkpoint.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     checkpoint.tick().await;
+    let mut industry_clock = tokio::time::interval(std::time::Duration::from_millis(200));
+    industry_clock.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut industry_job: Option<IndustryJob> = None;
 
     loop {
         tokio::select! {
@@ -80,6 +85,24 @@ pub async fn serve_endpoint(
                 break;
             }
             _ = tick.tick() => { wm.lock().await.tick(); }
+            _ = industry_clock.tick() => {
+                // One bounded immutable batch; a slow solve cannot enqueue catch-up work or block player ticks.
+                if industry_job.as_ref().is_some_and(|job|job.is_finished()) {
+                    match industry_job.take().unwrap().await {
+                        Ok((revision,result))=>{ wm.lock().await.apply_industry_result(revision,result); }
+                        Err(e)=>{ error!(error=%e,"industrial worker failed; previous facts preserved"); }
+                    }
+                }
+                if industry_job.is_none() {
+                    if let Some((revision,devices))=wm.lock().await.industry_input() {
+                        industry_job=Some(tokio::task::spawn_blocking(move || {
+                            let result=std::panic::catch_unwind(||crate::process::solve(&devices,0.2))
+                                .unwrap_or_else(|_|Err("industrial worker panicked; previous inventory preserved".into()));
+                            (revision,result)
+                        }));
+                    }
+                }
+            }
             _ = checkpoint.tick() => {
                 if let Err(e) = wm.lock().await.checkpoint() { error!(error=%e, "world checkpoint failed; previous save preserved"); }
             }
@@ -119,6 +142,11 @@ pub async fn serve_endpoint(
     endpoint.close(0u32.into(), b"shutdown");
     // Finish message handlers before the caller takes its final save snapshot.
     while connections.join_next().await.is_some() {}
+    // The bounded worker cannot outlive its server session. Discard its result on shutdown;
+    // callers persist the last atomically committed batch, never a partial transfer.
+    if let Some(job) = industry_job {
+        let _ = job.await;
+    }
     Ok(())
 }
 
@@ -250,6 +278,9 @@ async fn handle_connection(connection: Connection, wm: Arc<Mutex<VoxelWorld>>) -
                 }
                 ClientMessage::EditBlock(command) => {
                     wm.lock().await.edit_block(player_id, command);
+                }
+                ClientMessage::Equipment(command) => {
+                    wm.lock().await.equipment_command(player_id, command);
                 }
                 ClientMessage::Ping { seq } => {
                     let pong = ServerMessage::Pong { seq };

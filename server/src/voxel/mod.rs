@@ -1,6 +1,7 @@
 mod commands;
 mod containers;
 mod editing;
+mod industry;
 mod inventory;
 mod persistence;
 pub use persistence::lock_world;
@@ -11,7 +12,9 @@ mod spawn_tests;
 mod streaming;
 mod terrain;
 use anyhow::{Context, Result};
-use game_simulation::{clear_line, distance, grid::Grid, overlaps, step_with_actors};
+#[cfg(test)]
+use game_simulation::overlaps;
+use game_simulation::{clear_line, clear_line_grid, distance, grid::Grid};
 use protocol::*;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -22,6 +25,8 @@ use tokio::sync::mpsc;
 
 struct Player {
     sent_columns: BTreeSet<[i32; 2]>,
+    industry_columns: BTreeSet<[i32; 2]>,
+    industry_revision: Option<u64>,
     uuid: Option<[u8; 16]>,
     name: String,
     body: Body,
@@ -62,6 +67,9 @@ pub struct VoxelWorld {
     saved_players: BTreeMap<[u8; 16], crate::player_data::PlayerData>,
     save_path: Option<std::path::PathBuf>,
     spawn_sites: Vec<[f32; 3]>,
+    industry_revision: u64,
+    next_equipment_id: u64,
+    industry_ledger: crate::industry_data::ExchangeLedger,
 }
 impl VoxelWorld {
     /// Validate the embedded generation assets before accepting a session.
@@ -180,6 +188,9 @@ impl VoxelWorld {
             saved_players: BTreeMap::new(),
             save_path: None,
             spawn_sites,
+            industry_revision: 0,
+            industry_ledger: crate::industry_data::ExchangeLedger::default(),
+            next_equipment_id: 1,
         }
     }
     pub fn player_count(&self) -> usize {
@@ -203,6 +214,8 @@ impl VoxelWorld {
             id,
             Player {
                 sent_columns: BTreeSet::new(),
+                industry_columns: BTreeSet::new(),
+                industry_revision: None,
                 uuid: None,
                 name: String::new(),
                 body: Body {
@@ -302,6 +315,7 @@ impl VoxelWorld {
         self.tick += 1;
         self.stream_chunks();
         self.broadcast_terrain();
+        self.broadcast_equipment();
         let mut actions = Vec::new();
         let mut occupants: Vec<_> = self
             .players
@@ -335,11 +349,11 @@ impl VoxelWorld {
             };
             p.yaw = input.yaw;
             p.pitch = input.pitch;
-            game_simulation::step_player_with_actors(
+            game_simulation::step_player_in_grid(
                 &mut p.body,
                 input,
                 p.flying,
-                |b| self.terrain.solid(b),
+                &self.terrain,
                 &obstacles,
             );
             if let Some(a) = occupants.iter_mut().find(|a| a.0 == id) {
@@ -374,7 +388,7 @@ impl VoxelWorld {
                     p.body.position[1] + 1.0,
                     p.body.position[2],
                 ];
-                if d < 13.0 && clear_line(a, b, |b| self.terrain.solid(b)) {
+                if d < 13.0 && clear_line_grid(a, b, &self.terrain) {
                     input.yaw = (p.body.position[0] - npc.body.position[0])
                         .atan2(npc.body.position[2] - p.body.position[2]);
                     if d > 1.25 {
@@ -392,7 +406,7 @@ impl VoxelWorld {
                 .filter(|a| a.0 != npc.actor.id)
                 .map(|a| a.1)
                 .collect();
-            step_with_actors(&mut npc.body, input, |b| self.terrain.solid(b), &obstacles);
+            game_simulation::step_in_grid(&mut npc.body, input, &self.terrain, &obstacles);
             if let Some(a) = occupants.iter_mut().find(|a| a.0 == npc.actor.id) {
                 a.1 = npc.body.position;
             }
@@ -474,10 +488,10 @@ impl VoxelWorld {
         if input.pickup {
             if let Some(i) = self.items.iter().position(|item| {
                 distance(item.position, pos) < 2.0
-                    && clear_line(
+                    && clear_line_grid(
                         [pos[0], pos[1] + 0.5, pos[2]],
                         [item.position[0], item.position[1] + 0.2, item.position[2]],
-                        |b| self.terrain.solid(b),
+                        &self.terrain,
                     )
             }) {
                 self.pickup_item(id, i);
@@ -508,7 +522,7 @@ impl VoxelWorld {
                     .map(|i| (center[i] - eye[i]) * direction[i])
                     .sum::<f32>()
                     / d.max(0.001);
-                (d < 2.8 && dot > 0.65 && clear_line(eye, center, |b| self.terrain.solid(b)))
+                (d < 2.8 && dot > 0.65 && clear_line_grid(eye, center, &self.terrain))
                     .then_some((n.actor.id, d))
             })
             .min_by(|a, b| a.1.total_cmp(&b.1))
@@ -542,9 +556,9 @@ impl VoxelWorld {
         anyhow::ensure!(bytes.starts_with(b"DNG3D001"),"not a 3D save; legacy 2D saves are preserved and require explicit migration. Use a new CDDA_SAVE_PATH");
         let saved: Save = rmp_serde::from_slice(&bytes[8..]).context("decode 3D world")?;
         anyhow::ensure!(
-            matches!(saved.version, 1..=7)
+            matches!(saved.version, 1..=9)
                 && saved.size
-                    == if saved.version == 7 {
+                    == if saved.version >= 7 {
                         [0, WORLD_HEIGHT, 0]
                     } else if saved.version == 6 {
                         [0, 32, 0]
@@ -556,6 +570,10 @@ impl VoxelWorld {
         anyhow::ensure!(
             saved.version >= 5 || saved.entity_archive.is_none(),
             "unexpected entity reference in legacy world"
+        );
+        anyhow::ensure!(
+            saved.version >= 8 || saved.industry_archive.is_none(),
+            "unexpected industry reference in legacy world"
         );
         if saved.version >= 4 {
             anyhow::ensure!(
@@ -582,7 +600,7 @@ impl VoxelWorld {
             );
             anyhow::ensure!(
                 archive.data_version
-                    == if saved.version == 7 {
+                    == if saved.version >= 7 {
                         3
                     } else if saved.version == 6 {
                         2
@@ -614,7 +632,14 @@ impl VoxelWorld {
                 );
                 world.load_entity_checkpoint(path, &generation)?;
             }
-            if saved.version < 7 {
+            if saved.version >= 8 {
+                anyhow::ensure!(
+                    saved.industry_archive.as_ref() == Some(&generation),
+                    "industry checkpoint mismatch"
+                );
+                world.load_industry_checkpoint(path, &generation, saved.version)?;
+            }
+            if saved.version < 9 {
                 containers::backup_version(path, &bytes, saved.version)?;
             }
             return Ok(world);
@@ -673,8 +698,9 @@ impl VoxelWorld {
         std::fs::create_dir_all(&folder)?;
         crate::chunk_data::write_new(&folder.join(format!("{player_archive}.rkyv")), &chunks)?;
         self.write_entity_checkpoint(path, &player_archive)?;
+        self.write_industry_checkpoint(path, &player_archive)?;
         let saved = Save {
-            version: 7,
+            version: 9,
             size: [0, WORLD_HEIGHT, 0],
             generated_columns: Some(self.terrain.columns().into_iter().collect()),
             seed: self.world_seed,
@@ -682,6 +708,7 @@ impl VoxelWorld {
             containers: vec![],
             chunk_archive: Some(player_archive.clone()),
             entity_archive: Some(player_archive.clone()),
+            industry_archive: Some(player_archive.clone()),
             player_archive: Some(player_archive),
             items: None,
         };
@@ -718,6 +745,8 @@ struct Save {
     entity_archive: Option<String>,
     #[serde(default)]
     generated_columns: Option<Vec<[i32; 2]>>,
+    #[serde(default)]
+    industry_archive: Option<String>,
 }
 
 #[cfg(test)]

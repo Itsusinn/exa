@@ -29,7 +29,7 @@ pub(super) fn standing_position(map: &Grid, x: i32, z: i32) -> Option<[f32; 3]> 
             return None;
         }
         let position = [x as f32 + 0.5, (y + 1) as f32, z as f32 + 0.5];
-        return (!game_simulation::overlaps(position, &|p| map.solid(p))).then_some(position);
+        return (!game_simulation::overlaps_grid(position, map)).then_some(position);
     }
     None
 }

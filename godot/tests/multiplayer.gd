@@ -32,14 +32,20 @@ func run() -> void:
 	a.set_identity_path(certificate + ".alice.uuid")
 	b.set_identity_path(certificate + ".bob.uuid")
 	a.connect_game(address,"GodotAlice",certificate)
-	b.connect_game(address,"GodotBob",certificate)
 	var ready_a := await poll_ready(a)
+	# Establish the pickup actor first; simultaneous logins can swap spawn slots.
+	b.connect_game(address,"GodotBob",certificate)
 	var ready_b := await poll_ready(b)
 	check(ready_a and ready_b,"two Godot native clients receive authoritative world via TLS QUIC")
 	if not ready_a or not ready_b:
 		print(a.snapshot().status, " / ",b.snapshot().status)
 		quit(1)
 		return
+	# Verify pickup before jumping away from the two-metre interaction radius.
+	for i in range(30):
+		await step_pair({"pickup":true})
+		if not a.snapshot().inventory.is_empty(): break
+	check(not a.snapshot().inventory.is_empty(),"authoritative pickup reaches Godot inventory")
 	var start: Vector3 = a.snapshot().body_position
 	var peak := start.y
 	for i in range(12):
@@ -53,7 +59,6 @@ func run() -> void:
 	for i in range(28): await step_pair()
 	a.send_chat("Godot gdext integration verified")
 	for i in range(8): await step_pair({"pickup":true})
-	check(not a.snapshot().inventory.is_empty(),"authoritative pickup reaches Godot inventory")
 	check("Godot gdext integration verified" in " ".join(PackedStringArray(b.snapshot().journal)),"chat delivered to second Godot client")
 	# Approach the nearest enemy using the same player-input API, then attack.
 	var hit := false

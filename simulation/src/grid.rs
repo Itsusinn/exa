@@ -5,17 +5,20 @@ use std::collections::{BTreeMap, BTreeSet};
 #[derive(Clone, Debug, PartialEq)]
 pub struct Grid {
     pub blocks: BTreeMap<[i32; 3], Vec<u8>>,
+    pub equipment: BTreeMap<u64, protocol::EquipmentSnapshot>,
 }
 impl Grid {
     /// A known empty legacy spawn area, also useful for isolated simulations.
     pub fn empty() -> Self {
         Self {
             blocks: Self::origins().map(|o| (o, vec![AIR; 4096])).collect(),
+            equipment: BTreeMap::new(),
         }
     }
     pub fn unknown() -> Self {
         Self {
             blocks: BTreeMap::new(),
+            equipment: BTreeMap::new(),
         }
     }
     /// Index into the legacy dense save layout, not the streaming world bounds.

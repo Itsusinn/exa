@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u32 = 10;
+pub const PROTOCOL_VERSION: u32 = 12;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ClientMessage {
@@ -23,6 +23,7 @@ pub enum ClientMessage {
     Container(crate::ContainerCommand),
     Inventory(crate::InventoryCommand),
     EditBlock(crate::BlockEdit),
+    Equipment(crate::EquipmentCommand),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -46,6 +47,10 @@ pub enum ServerMessage {
     },
     Pong {
         seq: u32,
+    },
+    EquipmentState {
+        revision: u64,
+        devices: Vec<crate::EquipmentSnapshot>,
     },
 }
 

@@ -1,5 +1,5 @@
 use super::*;
-use game_simulation::{inventory::insert, targeting::target_block};
+use game_simulation::{inventory::insert, overlaps, targeting::target_block};
 
 impl VoxelWorld {
     pub fn edit_block(&mut self, id: u32, command: BlockEdit) {
@@ -39,7 +39,8 @@ impl VoxelWorld {
             anyhow::ensure!(
                 protocol::valid_voxel(position)
                     && position[1] > 0
-                    && self.terrain.get(position) == AIR,
+                    && self.terrain.get(position) == AIR
+                    && !self.equipment_occupies(position),
                 "放置位置被占用或超出世界边界。"
             );
             let collides = |feet| overlaps(feet, &|cell| cell == position);

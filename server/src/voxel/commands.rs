@@ -1,7 +1,7 @@
 use super::*;
 
 const HELP: &str =
-    "指令：/spawn（返回出生点）；/tp x y z（脚底坐标，支持 ~、~偏移）；/fly [on|off]；/help";
+    "指令：/spawn；/tp x y z；/fly [on|off]；/industry kit；/industry fill ID 升 [温度K]；/industry drain ID；/help";
 
 #[derive(Debug, PartialEq)]
 enum Command {
@@ -9,12 +9,24 @@ enum Command {
     Spawn,
     Teleport([f32; 3]),
     Fly(Option<bool>),
+    IndustryKit,
+    IndustryFill(u64, f64, f64),
+    IndustryDrain(u64),
 }
 
 fn parse(text: &str, origin: [f32; 3]) -> Result<Command> {
     let words: Vec<_> = text.split_whitespace().collect();
     match words.as_slice() {
         ["/help"] => Ok(Command::Help),
+        ["/industry", "kit"] => Ok(Command::IndustryKit),
+        ["/industry", "fill", id, liters] => parse_fill(id, liters, "293.15"),
+        ["/industry", "fill", id, liters, temperature] => parse_fill(id, liters, temperature),
+        ["/industry", "drain", id] => Ok(Command::IndustryDrain(
+            id.parse().context("设备ID必须为正整数。")?,
+        )),
+        ["/industry", ..] => anyhow::bail!(
+            "用法：/industry kit；/industry fill ID 升 [温度K]；/industry drain ID（全量排出）"
+        ),
         ["/spawn"] => Ok(Command::Spawn),
         ["/spawn", ..] => anyhow::bail!("用法：/spawn"),
         ["/fly"] => Ok(Command::Fly(None)),
@@ -41,6 +53,19 @@ fn parse(text: &str, origin: [f32; 3]) -> Result<Command> {
         ["/fly", ..] => anyhow::bail!("用法：/fly [on|off]"),
         _ => anyhow::bail!("未知指令。输入 /help 查看帮助。"),
     }
+}
+
+fn parse_fill(id: &str, liters: &str, temperature: &str) -> Result<Command> {
+    let id = id.parse::<u64>().context("设备ID必须为正整数。")?;
+    let liters = liters.parse::<f64>().context("注入量必须为升数。")?;
+    let temperature = temperature
+        .parse::<f64>()
+        .context("温度必须为开尔文数值。")?;
+    anyhow::ensure!(
+        id > 0 && liters.is_finite() && liters > 0.0 && temperature.is_finite(),
+        "无效注入参数。"
+    );
+    Ok(Command::IndustryFill(id, liters, temperature))
 }
 
 impl VoxelWorld {
@@ -77,6 +102,18 @@ impl VoxelWorld {
         self.players.get_mut(&id).unwrap().command_after = self.tick + 15;
         match command {
             Command::Help => unreachable!(),
+            Command::IndustryKit => {
+                self.industry_kit(id)?;
+                Ok("已领取工业测试补给：2 个储罐、16 段管道、2 台泵、2 个阀门。右键建造，R 旋转，E 检查和控制。".into())
+            }
+            Command::IndustryFill(equipment, liters, temperature) => {
+                self.exchange_water(id, equipment, Some((liters, temperature)))?;
+                Ok(format!("已向设备 {equipment} 注入 {liters} L 测试水（{temperature} K），外部输入已记账。"))
+            }
+            Command::IndustryDrain(equipment) => {
+                self.exchange_water(id, equipment, None)?;
+                Ok(format!("设备 {equipment} 已排空，外部排出已记账。"))
+            }
             Command::Fly(value) => {
                 let p = self.players.get_mut(&id).unwrap();
                 p.flying = value.unwrap_or(!p.flying);
@@ -117,7 +154,7 @@ impl VoxelWorld {
                     }
                 }
                 anyhow::ensure!(
-                    !overlaps(position, &|cell| self.terrain.solid(cell)),
+                    !game_simulation::overlaps_grid(position, &self.terrain),
                     "传送落点被方块占用。"
                 );
                 let collides = |other: [f32; 3]| {

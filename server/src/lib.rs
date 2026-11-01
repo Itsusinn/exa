@@ -1,6 +1,8 @@
 mod archive_io;
 pub mod chunk_data;
 pub mod entity_data;
+pub mod industry_data;
 pub mod network;
 pub mod player_data;
+pub mod process;
 pub mod voxel;

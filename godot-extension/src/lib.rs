@@ -71,6 +71,91 @@ impl GameBridge {
     }
 
     #[func]
+    fn rotate_equipment(&mut self) {
+        if self
+            .session
+            .selected_equipment()
+            .is_some_and(|kind| kind != protocol::EquipmentKind::Tank)
+        {
+            self.session.equipment_axis = (self.session.equipment_axis + 1) % 3;
+        }
+    }
+
+    #[func]
+    #[allow(clippy::too_many_arguments)] // Explicit scalar bridge boundary, with no gameplay rules.
+    fn configure_equipment(
+        &mut self,
+        id: i64,
+        revision: i64,
+        enabled: bool,
+        opening: f64,
+        pump_reversed: bool,
+        yaw: f32,
+        pitch: f32,
+    ) {
+        if id <= 0 || revision < 0 || !opening.is_finite() || !(0.0..=1.0).contains(&opening) {
+            return;
+        }
+        self.session
+            .configure_equipment(protocol::EquipmentCommand::Configure {
+                id: id as u64,
+                revision: revision as u64,
+                enabled,
+                opening,
+                pump_reversed,
+                yaw,
+                pitch,
+            });
+    }
+
+    #[func]
+    fn equipment_state(&self) -> VarArray {
+        self.session
+            .model
+            .terrain
+            .equipment
+            .values()
+            .map(|device| equipment_dictionary(device).to_variant())
+            .collect()
+    }
+
+    #[func]
+    fn equipment_target(&self, yaw: f32, pitch: f32) -> VarDictionary {
+        self.session
+            .equipment_target(yaw, pitch)
+            .map_or_else(VarDictionary::new, equipment_dictionary)
+    }
+
+    #[func]
+    fn equipment_preview(&self, yaw: f32, pitch: f32) -> VarDictionary {
+        self.session.equipment_preview(yaw, pitch).map_or_else(
+            VarDictionary::new,
+            |(device, reason)| {
+                let mut result = equipment_dictionary(&device);
+                result.set("valid", reason.is_empty());
+                result.set("reason", reason);
+                result
+            },
+        )
+    }
+
+    #[func]
+    fn equipment_geometry(&self, kind: i32, axis: i32) -> VarDictionary {
+        if !(0..=3).contains(&kind) || !(0..=2).contains(&axis) {
+            return VarDictionary::new();
+        }
+        geometry(presentation::equipment_shape(
+            match kind {
+                0 => protocol::EquipmentKind::Tank,
+                1 => protocol::EquipmentKind::Pipe,
+                2 => protocol::EquipmentKind::Pump,
+                _ => protocol::EquipmentKind::Valve,
+            },
+            axis as u8,
+        ))
+    }
+
+    #[func]
     fn block_target(&self, yaw: f32, pitch: f32) -> VarDictionary {
         let m = &self.session.model;
         if !m.ready || self.session.demo {
@@ -300,6 +385,9 @@ impl GameBridge {
             "shutdown_pending" => self.session.shutdown_pending(),
             "connected" => self.session.transport.is_some(), "status" => self.session.status.as_str(),
             "generation" => self.session.generation as i64, "revision" => m.revision as i64,
+            "equipment_revision" => m.equipment_revision as i64,
+            "equipment_count" => m.terrain.equipment.len() as i64,
+            "equipment_axis" => i64::from(self.session.equipment_axis),
             "loaded_sections" => m.terrain.blocks.len() as i64,
             "position" => vector(self.movement.position()), "body_position" => vector(m.body.position),
             "grounded" => m.body.grounded, "hp" => m.hp, "player_id" => i64::from(m.player_id),
@@ -357,6 +445,34 @@ impl GameBridge {
         self.attack = false;
         self.pickup = false;
     }
+}
+
+fn equipment_dictionary(device: &protocol::EquipmentSnapshot) -> VarDictionary {
+    let ports: VarArray = presentation::equipment_ports(device).iter().map(|port| {
+        vdict! { "position" => vector(port.position), "normal" => Vector3i::new(port.normal[0], port.normal[1], port.normal[2]) }.to_variant()
+    }).collect();
+    let contents: VarArray = device
+        .contents
+        .iter()
+        .map(|item| {
+            vdict! { "material" => item.material.as_str(), "moles" => item.moles }.to_variant()
+        })
+        .collect();
+    vdict! { "id" => device.id as i64, "revision" => device.revision as i64,
+    "name" => device.kind.item_name(), "kind" => match device.kind { protocol::EquipmentKind::Tank => 0i32, protocol::EquipmentKind::Pipe => 1, protocol::EquipmentKind::Pump => 2, protocol::EquipmentKind::Valve => 3 },
+    "origin" => Vector3i::new(device.origin[0],device.origin[1],device.origin[2]), "axis" => i64::from(device.axis),
+    "ports" => &ports, "contents" => &contents, "internal_energy_j" => device.internal_energy_j,
+    "empty" => device.is_empty(), "enabled" => device.enabled, "opening" => device.opening,
+    "pump_reversed" => device.pump_reversed, "reading" => &reading_dictionary(device.reading.as_ref()) }
+}
+
+fn reading_dictionary(reading: Option<&protocol::EquipmentReading>) -> VarDictionary {
+    reading.map_or_else(VarDictionary::new, |reading| vdict! {
+        "temperature_k" => &reading.temperature_k.map_or(Variant::nil(), |value| value.to_variant()),
+        "pressure_pa" => &reading.pressure_pa.map_or(Variant::nil(), |value| value.to_variant()), "volume_m3" => reading.volume_m3,
+        "capacity_m3" => reading.capacity_m3, "flow_m3_s" => reading.flow_m3_s,
+        "status" => reading.status.as_str(),
+    })
 }
 
 fn vector(p: [f32; 3]) -> Vector3 {

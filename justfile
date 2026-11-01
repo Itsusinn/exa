@@ -80,6 +80,22 @@ godot-containers:
 godot-editing:
     powershell -NoProfile -ExecutionPolicy Bypass -File scripts/godot.ps1 editing
 
+# 使用隔离世界验证工业设备建造、旋转、碰撞、检查与保存重开
+godot-industry:
+    powershell -NoProfile -ExecutionPolicy Bypass -File scripts/godot.ps1 industry
+
+# 使用实际 Forward+ 窗口检查工业设备、预览与面板截图
+godot-industry-graphics:
+    powershell -NoProfile -ExecutionPolicy Bypass -File scripts/godot.ps1 industry-graphics
+
+# 验证最小工业回路、控制面板与保存重开
+godot-industry-flow:
+    powershell -NoProfile -ExecutionPolicy Bypass -File scripts/godot.ps1 industry-flow
+
+# 在实际 Forward+ 窗口验证工业运行读数与控制
+godot-industry-flow-graphics:
+    powershell -NoProfile -ExecutionPolicy Bypass -File scripts/godot.ps1 industry-flow-graphics
+
 # 真实 QUIC 探索后在图形窗口验证负坐标区块加载、卸载与保存
 godot-streaming:
     powershell -NoProfile -ExecutionPolicy Bypass -File scripts/godot.ps1 streaming

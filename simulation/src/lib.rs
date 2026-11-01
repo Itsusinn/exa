@@ -1,5 +1,6 @@
 //! Deterministic, host-independent character movement shared by authority and prediction.
 use protocol::{Body, PlayerInput};
+pub mod equipment;
 pub mod grid;
 mod physics;
 pub mod targeting;
@@ -54,6 +55,17 @@ pub fn step_player_with_actors(
     solid: impl Fn([i32; 3]) -> bool,
     actors: &[[f32; 3]],
 ) {
+    step_with_geometry(body, input, flying, solid, actors, &[]);
+}
+
+fn step_with_geometry(
+    body: &mut Body,
+    input: PlayerInput,
+    flying: bool,
+    solid: impl Fn([i32; 3]) -> bool,
+    actors: &[[f32; 3]],
+    equipment: &[equipment::CollisionBox],
+) {
     if !input.valid() {
         return;
     }
@@ -78,7 +90,92 @@ pub fn step_player_with_actors(
         }
         body.velocity[1] = (body.velocity[1] - 23.0 * DT).max(-20.0);
     }
-    physics::move_character(body, &solid, actors);
+    physics::move_character(body, &solid, actors, equipment);
+}
+
+/// Authoritative movement and prediction share these exact equipment collision shapes.
+pub fn step_player_in_grid(
+    body: &mut Body,
+    input: PlayerInput,
+    flying: bool,
+    map: &grid::Grid,
+    actors: &[[f32; 3]],
+) {
+    // Query a bounded neighborhood rather than materialising every factory's shapes.
+    let nearby = equipment::CollisionBox {
+        min: [
+            body.position[0] - 3.0,
+            body.position[1] - 3.0,
+            body.position[2] - 3.0,
+        ],
+        max: [
+            body.position[0] + 3.0,
+            body.position[1] + HEIGHT + 3.0,
+            body.position[2] + 3.0,
+        ],
+    };
+    let shapes: Vec<_> = map
+        .equipment
+        .values()
+        .filter(|device| nearby.overlaps(&equipment::bounds(device)))
+        .flat_map(equipment::collision_boxes)
+        .collect();
+    step_with_geometry(body, input, flying, |p| map.solid(p), actors, &shapes);
+}
+
+pub fn step_in_grid(body: &mut Body, input: PlayerInput, map: &grid::Grid, actors: &[[f32; 3]]) {
+    step_player_in_grid(body, input, false, map, actors);
+}
+
+pub fn overlaps_grid(position: [f32; 3], map: &grid::Grid) -> bool {
+    if overlaps(position, &|p| map.solid(p)) {
+        return true;
+    }
+    let body = equipment::CollisionBox {
+        min: [
+            position[0] - RADIUS,
+            position[1] + 0.001,
+            position[2] - RADIUS,
+        ],
+        max: [
+            position[0] + RADIUS,
+            position[1] + HEIGHT - 0.001,
+            position[2] + RADIUS,
+        ],
+    };
+    map.equipment.values().any(|device| {
+        body.overlaps(&equipment::bounds(device))
+            && equipment::collision_boxes(device)
+                .iter()
+                .any(|shape| body.overlaps(shape))
+    })
+}
+
+pub fn clear_line_grid(a: [f32; 3], b: [f32; 3], map: &grid::Grid) -> bool {
+    clear_line_grid_except(a, b, map, None)
+}
+
+fn clear_line_grid_except(
+    a: [f32; 3],
+    b: [f32; 3],
+    map: &grid::Grid,
+    ignored: Option<[i32; 3]>,
+) -> bool {
+    if !clear_line(a, b, |p| Some(p) != ignored && map.solid(p)) {
+        return false;
+    }
+    let length = distance(a, b);
+    if length < 1e-6 {
+        return true;
+    }
+    let direction = std::array::from_fn(|i| (b[i] - a[i]) / length);
+    !map.equipment.values().any(|device| {
+        equipment::ray_box(a, direction, equipment::bounds(device))
+            .is_some_and(|(t, _)| t < length - 1e-4)
+            && equipment::collision_boxes(device).into_iter().any(|shape| {
+                equipment::ray_box(a, direction, shape).is_some_and(|(t, _)| t < length - 1e-4)
+            })
+    })
 }
 
 pub fn distance(a: [f32; 3], b: [f32; 3]) -> f32 {
@@ -100,7 +197,7 @@ pub fn container_reachable(map: &grid::Grid, feet: [f32; 3], target: [i32; 3]) -
     let center = target.map(|v| v as f32 + 0.5);
     map.get(target) == protocol::CHEST
         && distance(eye, center) <= protocol::CONTAINER_REACH
-        && clear_line(eye, center, |p| p != target && map.solid(p))
+        && clear_line_grid_except(eye, center, map, Some(target))
 }
 
 /// Traverse voxels along the crosshair ray, stopping at the first solid block.
@@ -110,43 +207,9 @@ pub fn targeted_container(
     yaw: f32,
     pitch: f32,
 ) -> Option<[i32; 3]> {
-    if !feet.iter().all(|v| v.is_finite()) || !yaw.is_finite() || !pitch.is_finite() {
-        return None;
-    }
-    let eye = [feet[0], feet[1] + EYE_HEIGHT, feet[2]];
-    let direction = [
-        yaw.sin() * pitch.cos(),
-        pitch.sin(),
-        -yaw.cos() * pitch.cos(),
-    ];
-    let mut cell = eye.map(|v| v.floor() as i32);
-    let step = direction.map(|d| if d >= 0.0 { 1 } else { -1 });
-    let delta = direction.map(|d| {
-        if d.abs() < 1e-6 {
-            f32::INFINITY
-        } else {
-            1.0 / d.abs()
-        }
-    });
-    let mut next: [f32; 3] = std::array::from_fn(|i| {
-        if delta[i].is_infinite() {
-            f32::INFINITY
-        } else {
-            ((cell[i] + i32::from(step[i] > 0)) as f32 - eye[i]) / direction[i]
-        }
-    });
-    for _ in 0..32 {
-        if map.solid(cell) {
-            return container_reachable(map, feet, cell).then_some(cell);
-        }
-        let axis = (0..3).min_by(|&a, &b| next[a].total_cmp(&next[b]))?;
-        if next[axis] > protocol::CONTAINER_REACH {
-            return None;
-        }
-        cell[axis] += step[axis];
-        next[axis] += delta[axis];
-    }
-    None
+    let hit = equipment::target(map, feet, yaw, pitch)?;
+    (hit.equipment.is_none() && container_reachable(map, feet, hit.position))
+        .then_some(hit.position)
 }
 
 #[cfg(test)]

@@ -2,7 +2,7 @@ use crate::local_server::{LocalEvent, LocalServer};
 use crate::network_client::{NetworkEvent, QuicSession, Transport};
 use game_client_core::voxel::Client3d;
 pub type Model = Client3d;
-use game_simulation::{grid::Grid, step_with_actors};
+use game_simulation::{equipment, grid::Grid, step_in_grid};
 use protocol::*;
 
 pub struct Session {
@@ -15,6 +15,7 @@ pub struct Session {
     pub status: String,
     pub demo: bool,
     pub generation: u64,
+    pub equipment_axis: u8,
     local_server: Option<LocalServer>,
     pub local_error: bool,
     retired_transports: Vec<Box<dyn Transport>>,
@@ -31,6 +32,7 @@ impl Default for Session {
             status: "Connect to explore the 3D world.".into(),
             demo: false,
             generation: 0,
+            equipment_axis: 0,
             local_server: None,
             local_error: false,
             retired_transports: Vec::new(),
@@ -101,6 +103,7 @@ impl Session {
         self.retire_transport();
         self.model = Client3d::default();
         self.demo = false;
+        self.equipment_axis = 0;
         self.generation += 1;
         self.status = if self.local_running() {
             "正在保存并关闭单人世界…"
@@ -165,6 +168,9 @@ impl Session {
         if disconnected {
             self.retire_transport();
             self.model.ready = false;
+            self.model.terrain.equipment.clear();
+            self.model.equipment_revision += 1;
+            self.generation += 1;
             if let Some(server) = &mut self.local_server {
                 self.local_error = true;
                 server.stop();
@@ -180,12 +186,7 @@ impl Session {
                 .filter(|a| a.id != self.model.player_id)
                 .map(|a| a.position)
                 .collect();
-            step_with_actors(
-                &mut self.model.body,
-                input,
-                |p| self.model.terrain.solid(p),
-                &obstacles,
-            );
+            step_in_grid(&mut self.model.body, input, &self.model.terrain, &obstacles);
         } else if let Some(t) = &self.transport {
             if let Err(e) = self.model.input(input, |m| t.send(m)) {
                 self.status = e;
@@ -234,6 +235,44 @@ impl Session {
         if !self.model.ready || self.demo {
             return;
         }
+        if let Some(hit) =
+            equipment::target(&self.model.terrain, self.model.body.position, yaw, pitch)
+        {
+            let command = if place {
+                self.selected_equipment()
+                    .map(|kind| EquipmentCommand::Place {
+                        target: hit.position,
+                        yaw,
+                        pitch,
+                        kind,
+                        axis: if kind != EquipmentKind::Tank {
+                            self.equipment_axis
+                        } else {
+                            0
+                        },
+                        inventory_revision: self.model.inventory.revision,
+                        slot: self.model.inventory.selected,
+                    })
+            } else {
+                hit.equipment
+                    .and_then(|id| self.model.terrain.equipment.get(&id))
+                    .map(|device| EquipmentCommand::Remove {
+                        id: device.id,
+                        revision: device.revision,
+                        yaw,
+                        pitch,
+                        inventory_revision: self.model.inventory.revision,
+                    })
+            };
+            if let Some(command) = command {
+                if let Some(t) = &self.transport {
+                    if let Err(e) = t.send(ClientMessage::Equipment(command)) {
+                        self.model.container_error = e;
+                    }
+                }
+                return;
+            }
+        }
         let Some(hit) = game_simulation::targeting::target_block(
             &self.model.terrain,
             self.model.body.position,
@@ -257,6 +296,105 @@ impl Session {
                 self.model.container_error = e;
             }
         }
+    }
+    pub fn selected_equipment(&self) -> Option<EquipmentKind> {
+        self.model
+            .inventory
+            .slots
+            .get(self.model.inventory.selected as usize)
+            .and_then(Option::as_ref)
+            .and_then(|item| EquipmentKind::from_item(&item.name))
+    }
+
+    pub fn configure_equipment(&mut self, command: EquipmentCommand) {
+        if !self.model.ready || self.demo {
+            return;
+        }
+        if let Some(transport) = &self.transport {
+            if let Err(error) = transport.send(ClientMessage::Equipment(command)) {
+                self.model.container_error = error;
+            }
+        }
+    }
+
+    pub fn equipment_target(&self, yaw: f32, pitch: f32) -> Option<&EquipmentSnapshot> {
+        if !self.model.ready || self.demo {
+            return None;
+        }
+        let hit = equipment::target(&self.model.terrain, self.model.body.position, yaw, pitch)?;
+        self.model.terrain.equipment.get(&hit.equipment?)
+    }
+
+    /// Local feedback only: the server repeats all reach, occupancy and inventory checks.
+    pub fn equipment_preview(
+        &self,
+        yaw: f32,
+        pitch: f32,
+    ) -> Option<(EquipmentSnapshot, &'static str)> {
+        if !self.model.ready || self.demo {
+            return None;
+        }
+        let kind = self.selected_equipment()?;
+        let hit = equipment::target(&self.model.terrain, self.model.body.position, yaw, pitch)?;
+        let device = EquipmentSnapshot {
+            id: 1,
+            revision: 0,
+            kind,
+            origin: equipment::placement_origin(hit, kind),
+            axis: if kind != EquipmentKind::Tank {
+                self.equipment_axis
+            } else {
+                0
+            },
+            contents: vec![],
+            internal_energy_j: 0.0,
+            enabled: false,
+            opening: 1.0,
+            pump_reversed: false,
+            reading: None,
+        };
+        let cells = equipment::occupied_cells(&device);
+        let mut reason = "";
+        if !device.valid() {
+            reason = "超出世界边界";
+        } else if cells.iter().any(|p| self.model.terrain.get(*p) != AIR) {
+            reason = "位置被占用或尚未加载";
+        } else if self.model.terrain.equipment.values().any(|other| {
+            equipment::occupied_cells(other)
+                .iter()
+                .any(|p| cells.contains(p))
+        }) {
+            reason = "位置已有设备";
+        } else {
+            let boxes = equipment::collision_boxes(&device);
+            let overlaps = |p: [f32; 3]| {
+                boxes.iter().any(|b| {
+                    p[0] + game_simulation::RADIUS > b.min[0]
+                        && p[0] - game_simulation::RADIUS < b.max[0]
+                        && p[1] + game_simulation::HEIGHT > b.min[1]
+                        && p[1] < b.max[1]
+                        && p[2] + game_simulation::RADIUS > b.min[2]
+                        && p[2] - game_simulation::RADIUS < b.max[2]
+                })
+            };
+            if overlaps(self.model.body.position)
+                || self
+                    .model
+                    .actors
+                    .iter()
+                    .any(|a| a.id != self.model.player_id && overlaps(a.position))
+            {
+                reason = "位置与角色重叠";
+            } else if self
+                .model
+                .items
+                .iter()
+                .any(|item| cells.contains(&item.position.map(|p| p.floor() as i32)))
+            {
+                reason = "请先拾取地面物品";
+            }
+        }
+        Some((device, reason))
     }
     pub fn load_demo(&mut self) {
         self.disconnect();

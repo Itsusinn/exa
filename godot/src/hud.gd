@@ -27,6 +27,9 @@ var container_wanted := false
 var container_target: Dictionary = {}
 var interaction_hint: Label
 var block_target: Dictionary = {}
+var equipment_target: Dictionary = {}
+var equipment_placement: Dictionary = {}
+var equipment_open := false
 var menu: Control
 var top: PanelContainer
 
@@ -166,7 +169,7 @@ func update_state(state: Dictionary, captured: bool) -> void:
 	panel.visible = (inventory_open or container_open) and state.ready and not menu.visible
 	if panel.visible: panel.update_view(state,container_open)
 	else: panel.clear_selection()
-	hotbar.visible = state.ready and not menu.visible and not panel.visible
+	hotbar.visible = state.ready and not menu.visible and not panel.visible and not equipment_open
 	for i in range(9): hotbar_slots[i].update_slot(state.inventory_slots[i],i == state.selected_slot,false,{})
 	var held: Dictionary = state.inventory_slots[state.selected_slot]
 	held_name.text = "空手" if held.is_empty() else held.name
@@ -180,9 +183,14 @@ func update_state(state: Dictionary, captured: bool) -> void:
 	var log_text := "\n".join(PackedStringArray(state.journal))
 	if journal.text != log_text: journal.text = log_text
 	chat.editable = state.ready and not state.demo
-	reticle.visible = state.ready and not panel.visible and not menu.visible and not container_open
+	reticle.visible = state.ready and not panel.visible and not menu.visible and not container_open and not equipment_open
 	var hint := ""
 	if not state.container_error.is_empty(): hint = state.container_error
+	elif not equipment_placement.is_empty():
+		hint = "%s · %s · 右键建造" % [equipment_placement.name,"可放置" if equipment_placement.valid else equipment_placement.reason]
+		if equipment_placement.kind != 0: hint += " · %s 轴 / R 旋转" % ["X","Y","Z"][equipment_placement.axis]
+		if not equipment_target.is_empty(): hint += " · E 查看 / 左键拆除"
+	elif not equipment_target.is_empty(): hint = "%s · E 查看 / 左键拆除" % equipment_target.name
 	elif not block_target.is_empty():
 		hint = "%s  ·  左键破坏 / 右键放置" % block_target.name
 		if not container_target.is_empty(): hint += "  ·  E 打开"

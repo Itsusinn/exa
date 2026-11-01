@@ -1,6 +1,7 @@
 extends Node3D
 
 const HudScript = preload("res://src/hud.gd")
+const IndustryView = preload("res://src/industry_view.gd")
 const MaterialShader = preload("res://materials/voxel.gdshader")
 var bridge: GameBridge
 var camera: Camera3D
@@ -39,6 +40,7 @@ var was_ready := false
 var exit_code := 0
 var container_requested_at := 0
 var hotbar_cursor := 0
+var industry: Node3D
 
 func _ready() -> void:
 	bridge = GameBridge.new()
@@ -48,6 +50,10 @@ func _ready() -> void:
 	_setup_world()
 	hud = HudScript.new()
 	add_child(hud)
+	industry = IndustryView.new()
+	industry.name = "Industry"
+	add_child(industry)
+	industry.close_requested.connect(_close_equipment)
 	hud.connect_requested.connect(_connect_game)
 	hud.demo_requested.connect(_demo)
 	hud.disconnect_requested.connect(_disconnect_game)
@@ -100,12 +106,12 @@ func _parse_options(args: PackedStringArray) -> Dictionary:
 func _setup_input() -> void:
 	var mappings := {"forward": [KEY_W, KEY_UP], "back": [KEY_S, KEY_DOWN],
 		"left": [KEY_A, KEY_LEFT], "right": [KEY_D, KEY_RIGHT], "jump": [KEY_SPACE],
-		"descend": [KEY_SHIFT], "sprint": [KEY_CTRL], "interact": [KEY_E]}
+		"descend": [KEY_SHIFT], "sprint": [KEY_CTRL], "interact": [KEY_E], "rotate_equipment": [KEY_R]}
 	for action in mappings:
 		if not InputMap.has_action(action): InputMap.add_action(action)
 		for key in mappings[action]:
 			var event := InputEventKey.new()
-			if action == "interact": event.keycode = key
+			if action in ["interact", "rotate_equipment"]: event.keycode = key
 			else: event.physical_keycode = key
 			InputMap.action_add_event(action,event)
 	for i in range(9):
@@ -239,6 +245,7 @@ func _notification(what: int) -> void:
 	if what == NOTIFICATION_WM_CLOSE_REQUEST and is_instance_valid(hud): _leave_game(true)
 
 func _disconnect_game() -> void:
+	_close_equipment()
 	_close_container()
 	_release_mouse()
 	bridge.disconnect_game()
@@ -254,6 +261,7 @@ func _release_mouse() -> void:
 
 func _focus_lost() -> void:
 	focused = false
+	_close_equipment()
 	_close_container()
 	_release_mouse()
 
@@ -264,7 +272,7 @@ func _focus_gained() -> void:
 func _sync_mouse_capture() -> void:
 	var owner := get_viewport().gui_get_focus_owner()
 	var ui_focused := owner != null and owner.is_visible_in_tree()
-	var should_capture: bool = focused and state.get("ready",false) and pending_action.is_empty() and not entering_game and not hud.menu.visible and not hud.inventory_open and not hud.container_wanted and not hud.container_open and not ui_focused
+	var should_capture: bool = focused and state.get("ready",false) and pending_action.is_empty() and not entering_game and not hud.menu.visible and not hud.inventory_open and not hud.container_wanted and not hud.container_open and not industry.opened and not ui_focused
 	if should_capture and not captured:
 		captured = true
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
@@ -291,6 +299,11 @@ func _select_hotbar(slot: int) -> void:
 	bridge.select_hotbar(hotbar_cursor)
 
 func _open_container() -> void:
+	var device := bridge.equipment_target(yaw,pitch)
+	if not device.is_empty():
+		industry.show_device(device)
+		_release_mouse()
+		return
 	var target := bridge.container_target(yaw,pitch)
 	if target.is_empty(): return
 	hud.container_wanted = true
@@ -299,9 +312,20 @@ func _open_container() -> void:
 	bridge.open_container(target.position)
 	_release_mouse()
 
+func _close_equipment() -> void:
+	if not is_instance_valid(industry): return
+	industry.close()
+	var owner := get_viewport().gui_get_focus_owner()
+	if owner: owner.release_focus()
+	_sync_mouse_capture()
+
 func _input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo:
 		if event.keycode == KEY_ESCAPE:
+			if industry.opened:
+				_close_equipment()
+				get_viewport().set_input_as_handled()
+				return
 			if hud.panel.visible and not hud.panel.selected.is_empty():
 				hud.panel.clear_selection()
 				get_viewport().set_input_as_handled()
@@ -325,6 +349,7 @@ func _input(event: InputEvent) -> void:
 			_open_container()
 			get_viewport().set_input_as_handled()
 		elif event.keycode == KEY_TAB and state.get("ready", false) and not hud.menu.visible:
+			_close_equipment()
 			_close_container()
 			hud.inventory_open = not hud.inventory_open
 			_release_mouse()
@@ -341,6 +366,10 @@ func _input(event: InputEvent) -> void:
 			hud.chat.caret_column = 1
 			get_viewport().set_input_as_handled()
 		elif captured and focused and not hud.menu.visible and not hud.inventory_open and not hud.container_open:
+			if event.is_action_pressed("rotate_equipment"):
+				bridge.rotate_equipment()
+				get_viewport().set_input_as_handled()
+				return
 			for i in range(9):
 				if event.is_action_pressed("hotbar_%d" % i):
 					_select_hotbar(i)
@@ -365,7 +394,7 @@ func _unhandled_input(event: InputEvent) -> void:
 func _process(delta: float) -> void:
 	_sync_mouse_capture()
 	var controls := {"yaw": yaw, "pitch": pitch}
-	if captured and focused and not hud.inventory_open and not hud.menu.visible and not hud.container_wanted and not hud.container_open:
+	if captured and focused and not hud.inventory_open and not hud.menu.visible and not hud.container_wanted and not hud.container_open and not industry.opened:
 		controls.forward = Input.get_action_strength("forward") - Input.get_action_strength("back")
 		controls.strafe = Input.get_action_strength("right") - Input.get_action_strength("left")
 		controls.jump = Input.is_action_pressed("jump")
@@ -384,8 +413,10 @@ func _process(delta: float) -> void:
 	elif hud.container_wanted and Time.get_ticks_msec() - container_requested_at > 3000:
 		_close_container()
 	if not state.ready: _close_container()
+	if not state.ready: industry.close()
 	hud.container_target = bridge.container_target(yaw,pitch) if captured else {}
 	hud.block_target = bridge.block_target(yaw,pitch) if captured else {}
+	hud.equipment_target = bridge.equipment_target(yaw,pitch) if captured else {}
 	if not pending_action.is_empty():
 		hud.menu.feedback.text = state.status
 		if not state.local_running and not state.shutdown_pending:
@@ -428,9 +459,12 @@ func _process(delta: float) -> void:
 		camera.position = state.position + Vector3(0,1.58,0)
 		camera.rotation = Vector3(pitch,-yaw,0)
 		_update_entities()
+		industry.update_view(self)
+		hud.equipment_placement = industry.placement
 		ready_frames += 1
 	elif hud.menu.visible and hud.menu.page == "home" and not entering_game:
 		ready_frames += 1
+	hud.equipment_open = industry.opened
 	hud.update_state(state,captured)
 	if not capture_path.is_empty() and not capture_pending:
 		if Time.get_ticks_msec() - started > 120000:
@@ -443,6 +477,7 @@ func _process(delta: float) -> void:
 			_capture()
 
 func _clear_world() -> void:
+	industry.clear()
 	hotbar_cursor = 0
 	terrain_nodes.clear()
 	terrain_pending.clear()

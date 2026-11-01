@@ -18,6 +18,7 @@ pub(super) fn move_character(
     body: &mut Body,
     solid: &impl Fn([i32; 3]) -> bool,
     actors: &[[f32; 3]],
+    equipment: &[crate::equipment::CollisionBox],
 ) {
     let desired = Vector::from(body.velocity) * DT;
     let center = Vector::from(body.position) + Vector::Y * (HEIGHT * 0.5);
@@ -64,6 +65,15 @@ pub(super) fn move_character(
         }
         let low = Vector::from(start.map(|v| v as f32));
         let high = Vector::from(end.map(|v| v as f32));
+        let extents = (high - low) * 0.5;
+        colliders.insert(
+            ColliderBuilder::cuboid(extents.x, extents.y, extents.z)
+                .translation((low + high) * 0.5),
+        );
+    }
+    for shape in equipment {
+        let low = Vector::from(shape.min);
+        let high = Vector::from(shape.max);
         let extents = (high - low) * 0.5;
         colliders.insert(
             ColliderBuilder::cuboid(extents.x, extents.y, extents.z)

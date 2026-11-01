@@ -129,7 +129,7 @@ impl VoxelWorld {
 
     fn position_available(&self, position: [f32; 3], exclude: u32) -> bool {
         valid_position(position)
-            && !overlaps(position, &|p| self.terrain.solid(p))
+            && !game_simulation::overlaps_grid(position, &self.terrain)
             && self
                 .players
                 .iter()
@@ -284,6 +284,7 @@ mod tests {
         let bytes = std::fs::read(&path).unwrap();
         let mut saved: Save = rmp_serde::from_slice(&bytes[8..]).unwrap();
         saved.version = 6;
+        saved.industry_archive = None;
         saved.size = [0, 32, 0];
         let generation = saved.chunk_archive.as_ref().unwrap();
         let cp = path
@@ -343,6 +344,7 @@ mod tests {
         let bytes = std::fs::read(&path).unwrap();
         let mut saved: Save = rmp_serde::from_slice(&bytes[8..]).unwrap();
         saved.version = 5;
+        saved.industry_archive = None;
         saved.size = WORLD_SIZE;
         saved.generated_columns = None;
         let generation = saved.chunk_archive.as_ref().unwrap();
@@ -814,7 +816,7 @@ mod tests {
         loaded.save(&path).unwrap();
         let bytes = std::fs::read(&path).unwrap();
         let save: Save = rmp_serde::from_slice(&bytes[8..]).unwrap();
-        assert_eq!(save.version, 7);
+        assert_eq!(save.version, 9);
         assert!(save.blocks.is_empty() && save.containers.is_empty() && save.items.is_none());
         assert_eq!(save.player_archive, save.chunk_archive);
         let restored = VoxelWorld::load(&path).unwrap();

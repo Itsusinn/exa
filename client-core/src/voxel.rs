@@ -1,10 +1,13 @@
-use game_simulation::{grid::Grid, step_player_with_actors};
+use game_simulation::{grid::Grid, step_player_in_grid};
 use protocol::*;
 use std::collections::{BTreeSet, VecDeque};
 
 pub struct Client3d {
     pub terrain: Grid,
     pub revision: u64,
+    pub equipment_revision: u64,
+    equipment_server_revision: u64,
+    authoritative_body: Body,
     pub dirty_chunks: BTreeSet<[i32; 3]>,
     pub player_id: u32,
     pub spawn_rotation: [f32; 2],
@@ -27,6 +30,9 @@ impl Default for Client3d {
         Self {
             terrain: Grid::unknown(),
             revision: 0,
+            equipment_revision: 0,
+            equipment_server_revision: 0,
+            authoritative_body: Body::default(),
             dirty_chunks: BTreeSet::new(),
             player_id: 0,
             spawn_rotation: [0.0, -0.1],
@@ -66,6 +72,16 @@ impl Client3d {
                     return;
                 }
                 self.terrain.unload_column(column);
+                let blocks = &self.terrain.blocks;
+                let before = self.terrain.equipment.len();
+                self.terrain.equipment.retain(|_, device| {
+                    game_simulation::equipment::occupied_cells(device)
+                        .iter()
+                        .any(|p| blocks.contains_key(&Grid::origin(*p)))
+                });
+                if before != self.terrain.equipment.len() {
+                    self.equipment_revision += 1;
+                }
                 self.revision += 1;
                 for y in (0..WORLD_HEIGHT).step_by(16) {
                     self.dirty_section([column[0] * 16, y, column[1] * 16]);
@@ -86,6 +102,41 @@ impl Client3d {
                     self.dirty_section(origin);
                 }
             }
+            ServerMessage::EquipmentState { revision, devices } => {
+                if revision < self.equipment_server_revision
+                    || devices.len() > MAX_EQUIPMENT
+                    || devices.iter().any(|device| !device.valid())
+                {
+                    return;
+                }
+                let next: std::collections::BTreeMap<_, _> = devices
+                    .iter()
+                    .cloned()
+                    .map(|device| (device.id, device))
+                    .collect();
+                if next.len() != devices.len() {
+                    return;
+                }
+                self.equipment_server_revision = revision;
+                if self.terrain.equipment != next {
+                    // Runtime inventories and readings do not affect collision geometry.
+                    // Replaying movement at each process update would introduce needless
+                    // corrections while a stationary pipe simply transports water.
+                    let geometry_changed = self.terrain.equipment.len() != next.len()
+                        || next.iter().any(|(id, device)| {
+                            self.terrain.equipment.get(id).is_none_or(|old| {
+                                old.kind != device.kind
+                                    || old.origin != device.origin
+                                    || old.axis != device.axis
+                            })
+                        });
+                    self.terrain.equipment = next;
+                    self.equipment_revision += 1;
+                    if self.ready && geometry_changed {
+                        self.replay_inputs();
+                    }
+                }
+            }
             ServerMessage::World3d(s) => {
                 if s.seq < self.last_ack {
                     return;
@@ -95,6 +146,7 @@ impl Client3d {
                     self.pending.pop_front();
                 }
                 self.body = s.body;
+                self.authoritative_body = s.body;
                 self.flying = s.flying;
                 self.actors = s.actors;
                 self.items = s.items;
@@ -105,25 +157,29 @@ impl Client3d {
                 self.container_error = s.container_error;
                 self.ready = self.player_id != 0
                     && (self.ready || self.terrain.nearby_known(s.body.position));
-                let obstacles: Vec<_> = self
-                    .actors
-                    .iter()
-                    .filter(|a| a.id != self.player_id)
-                    .map(|a| a.position)
-                    .collect();
-                for &(_, input) in &self.pending {
-                    if self.terrain.nearby_known(self.body.position) {
-                        step_player_with_actors(
-                            &mut self.body,
-                            input,
-                            self.flying,
-                            |p| self.terrain.solid(p),
-                            &obstacles,
-                        );
-                    }
-                }
+                self.replay_inputs();
             }
             _ => {}
+        }
+    }
+    fn replay_inputs(&mut self) {
+        self.body = self.authoritative_body;
+        let obstacles: Vec<_> = self
+            .actors
+            .iter()
+            .filter(|a| a.id != self.player_id)
+            .map(|a| a.position)
+            .collect();
+        for &(_, input) in &self.pending {
+            if self.terrain.nearby_known(self.body.position) {
+                step_player_in_grid(
+                    &mut self.body,
+                    input,
+                    self.flying,
+                    &self.terrain,
+                    &obstacles,
+                );
+            }
         }
     }
     pub fn input(
@@ -151,11 +207,11 @@ impl Client3d {
             .map(|a| a.position)
             .collect();
         if self.terrain.nearby_known(self.body.position) {
-            step_player_with_actors(
+            step_player_in_grid(
                 &mut self.body,
                 input,
                 self.flying,
-                |p| self.terrain.solid(p),
+                &self.terrain,
                 &obstacles,
             );
         }
@@ -165,6 +221,103 @@ impl Client3d {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn process_updates_keep_prediction_but_geometry_changes_replay() {
+        let mut m = model();
+        m.authoritative_body = m.body;
+        let mut device = EquipmentSnapshot {
+            id: 8,
+            revision: 0,
+            kind: EquipmentKind::Tank,
+            origin: [15, 1, 15],
+            axis: 0,
+            contents: vec![],
+            internal_energy_j: 0.0,
+            enabled: false,
+            opening: 1.0,
+            pump_reversed: false,
+            reading: None,
+        };
+        m.apply(ServerMessage::EquipmentState {
+            revision: 1,
+            devices: vec![device.clone()],
+        });
+        m.body.position[0] += 0.25;
+        let predicted = m.body;
+        device.contents.push(MaterialAmount {
+            material: "icheme:water".into(),
+            moles: 100.0,
+        });
+        device.internal_energy_j = 1000.0;
+        m.apply(ServerMessage::EquipmentState {
+            revision: 2,
+            devices: vec![device.clone()],
+        });
+        assert_eq!(m.body, predicted);
+        assert_eq!(m.terrain.equipment[&8].contents, device.contents);
+        device.origin[0] += 1;
+        m.apply(ServerMessage::EquipmentState {
+            revision: 3,
+            devices: vec![device],
+        });
+        assert_eq!(m.body, m.authoritative_body);
+    }
+    #[test]
+    fn equipment_visibility_same_revision_unload_and_invalid_state() {
+        let mut m = model();
+        m.authoritative_body = m.body;
+        let tank = EquipmentSnapshot {
+            id: 7,
+            revision: 0,
+            kind: EquipmentKind::Tank,
+            origin: [15, 1, 15],
+            axis: 0,
+            contents: vec![],
+            internal_energy_j: 0.0,
+            enabled: false,
+            opening: 1.0,
+            pump_reversed: false,
+            reading: None,
+        };
+        m.apply(ServerMessage::EquipmentState {
+            revision: 2,
+            devices: vec![tank.clone()],
+        });
+        assert_eq!(m.terrain.equipment.len(), 1);
+        // A spanning tank remains while one of its columns is still visible.
+        m.apply(ServerMessage::UnloadColumn { column: [0, 0] });
+        assert_eq!(m.terrain.equipment.len(), 1);
+        m.apply(ServerMessage::EquipmentState {
+            revision: 2,
+            devices: vec![],
+        });
+        assert!(m.terrain.equipment.is_empty());
+        m.apply(ServerMessage::EquipmentState {
+            revision: 1,
+            devices: vec![tank.clone()],
+        });
+        assert!(m.terrain.equipment.is_empty());
+        m.apply(ServerMessage::EquipmentState {
+            revision: 3,
+            devices: vec![tank.clone(), tank.clone()],
+        });
+        assert!(m.terrain.equipment.is_empty());
+        m.apply(ServerMessage::EquipmentState {
+            revision: 3,
+            devices: vec![tank],
+        });
+        for column in [[1, 0], [0, 1], [1, 1]] {
+            m.apply(ServerMessage::UnloadColumn { column });
+        }
+        assert!(m.terrain.equipment.is_empty());
+        m.apply(ServerMessage::Welcome3d {
+            player_id: 2,
+            seed: 0,
+            rotation: [0.0; 2],
+        });
+        assert_eq!(m.equipment_revision, 0);
+        assert!(m.terrain.equipment.is_empty());
+    }
     fn model() -> Client3d {
         let mut m = Client3d {
             ready: true,
@@ -268,7 +421,7 @@ mod tests {
             container_error: String::new(),
         };
         let mut expected = s.body;
-        step_player_with_actors(&mut expected, input, true, |p| m.terrain.solid(p), &[]);
+        step_player_in_grid(&mut expected, input, true, &m.terrain, &[]);
         m.apply(ServerMessage::World3d(s.clone()));
         assert!(m.flying);
         assert_eq!(m.body, expected);
