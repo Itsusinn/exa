@@ -9,6 +9,7 @@ pub struct Client3d {
     pub equipment_geometry_revision: u64,
     pub pipe_reply: Option<PipeRouteReply>,
     pub assembly_reply: Option<AssemblyReport>,
+    pub distillation_reply: Option<DistillationReply>,
     equipment_server_revision: u64,
     authoritative_body: Body,
     pub dirty_chunks: BTreeSet<[i32; 3]>,
@@ -37,6 +38,7 @@ impl Default for Client3d {
             equipment_geometry_revision: 0,
             pipe_reply: None,
             assembly_reply: None,
+            distillation_reply: None,
             equipment_server_revision: 0,
             authoritative_body: Body::default(),
             dirty_chunks: BTreeSet::new(),
@@ -157,6 +159,11 @@ impl Client3d {
             ServerMessage::AssemblyReport(report) => {
                 if report.valid() {
                     self.assembly_reply = Some(report);
+                }
+            }
+            ServerMessage::Distillation(reply) => {
+                if reply.valid() {
+                    self.distillation_reply = Some(reply);
                 }
             }
             ServerMessage::World3d(s) => {

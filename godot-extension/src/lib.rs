@@ -314,6 +314,99 @@ impl GameBridge {
     }
 
     #[func]
+    fn open_distillation(&mut self) -> bool {
+        self.session.open_distillation()
+    }
+
+    #[func]
+    fn close_distillation(&mut self) {
+        self.session.close_distillation();
+    }
+
+    #[func]
+    fn cancel_distillation(&mut self) {
+        self.session.cancel_distillation();
+    }
+
+    #[func]
+    fn distillation_defaults(&self) -> VarDictionary {
+        distillation_spec_dictionary(&protocol::DistillationSpec::default())
+    }
+
+    #[func]
+    fn calculate_distillation(&mut self, input: VarDictionary) -> bool {
+        let spec = (|| -> Option<protocol::DistillationSpec> {
+            Some(protocol::DistillationSpec {
+                trays: u8::try_from(input.get("trays")?.try_to::<i32>().ok()?).ok()?,
+                feed_tray: u8::try_from(input.get("feed_tray")?.try_to::<i32>().ok()?).ok()?,
+                feed_mol_s: input.get("feed_mol_s")?.try_to::<f64>().ok()?,
+                butane_fraction: input.get("butane_fraction")?.try_to::<f64>().ok()?,
+                feed_temperature_k: input.get("feed_temperature_k")?.try_to::<f64>().ok()?,
+                pressure_pa: input.get("pressure_pa")?.try_to::<f64>().ok()?,
+                reflux_ratio: input.get("reflux_ratio")?.try_to::<f64>().ok()?,
+                distillate_fraction: input.get("distillate_fraction")?.try_to::<f64>().ok()?,
+            })
+        })();
+        spec.is_some_and(|spec| self.session.calculate_distillation(spec))
+    }
+
+    #[func]
+    fn distillation_state(&self) -> VarDictionary {
+        let mut state = vdict! {"open" => self.session.distillation_open,
+        "pending" => self.session.distillation_pending,
+        "local_message" => self.session.distillation_message.as_str()};
+        if let Some(spec) = &self.session.distillation_spec {
+            state.set("submitted_spec", &distillation_spec_dictionary(spec));
+        }
+        let Some(reply) = &self.session.distillation_reply else {
+            return state;
+        };
+        state.set("request_id", reply.request_id as i64);
+        state.set(
+            "status",
+            match reply.status {
+                protocol::DistillationStatus::Running => "running",
+                protocol::DistillationStatus::Completed => "completed",
+                protocol::DistillationStatus::Cancelled => "cancelled",
+                protocol::DistillationStatus::Rejected => "rejected",
+                protocol::DistillationStatus::Failed => "failed",
+            },
+        );
+        state.set("message", reply.message.as_str());
+        if let Some(result) = &reply.result {
+            let stages: VarArray = result
+                .stages
+                .iter()
+                .map(|s| {
+                    vdict! {
+                        "number" => i32::from(s.number), "temperature_k" => s.temperature_k,
+                        "liquid_butane_fraction" => s.liquid_butane_fraction,
+                        "vapor_butane_fraction" => s.vapor_butane_fraction,
+                        "liquid_mol_s" => s.liquid_mol_s, "vapor_mol_s" => s.vapor_mol_s,
+                    }
+                    .to_variant()
+                })
+                .collect();
+            state.set(
+                "result",
+                &vdict! {"spec" => &distillation_spec_dictionary(&result.spec),
+                "stages" => &stages, "distillate_mol_s" => result.distillate_mol_s,
+                "bottoms_mol_s" => result.bottoms_mol_s,
+                "distillate_butane_fraction" => result.distillate_butane_fraction,
+                "bottoms_butane_fraction" => result.bottoms_butane_fraction,
+                "condenser_temperature_k" => result.condenser_temperature_k,
+                "condenser_duty_w" => result.condenser_duty_w,
+                "reboiler_duty_w" => result.reboiler_duty_w,
+                "max_component_residual_mol_s" => result.max_component_residual_mol_s,
+                "max_energy_residual_w" => result.max_energy_residual_w,
+                "max_equilibrium_residual" => result.max_equilibrium_residual,
+                "iterations" => i64::from(result.iterations)},
+            );
+        }
+        state
+    }
+
+    #[func]
     fn assembly_report(&self) -> VarDictionary {
         let Some(report) = &self.session.assembly_report else {
             return vdict! { "pending" => self.session.assembly_pending };
@@ -653,6 +746,13 @@ impl GameBridge {
         self.attack = false;
         self.pickup = false;
     }
+}
+
+fn distillation_spec_dictionary(spec: &protocol::DistillationSpec) -> VarDictionary {
+    vdict! { "trays" => i32::from(spec.trays), "feed_tray" => i32::from(spec.feed_tray),
+    "feed_mol_s" => spec.feed_mol_s, "butane_fraction" => spec.butane_fraction,
+    "feed_temperature_k" => spec.feed_temperature_k, "pressure_pa" => spec.pressure_pa,
+    "reflux_ratio" => spec.reflux_ratio, "distillate_fraction" => spec.distillate_fraction }
 }
 
 fn equipment_dictionary(device: &protocol::EquipmentSnapshot) -> VarDictionary {

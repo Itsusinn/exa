@@ -366,6 +366,53 @@ fn best(evaluations: &[Evaluation], x: [f64; 2]) -> Evaluation {
         .expect("evaluations always returns at least one root")
 }
 
+/// A specified PR branch used by the steady equilibrium-stage design calculator.
+/// This does not perform a flash or change the energy reference of the package.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct DesignPhase {
+    pub enthalpy_j_mol: f64,
+    pub ln_phi: [f64; 2],
+    pub volume_m3_mol: f64,
+}
+
+pub(crate) fn design_phase(t: f64, p: f64, x0: f64, vapor: bool) -> Result<DesignPhase, String> {
+    check_temperature(t)?;
+    check_pressure(p)?;
+    if !x0.is_finite() || !(0.0..=1.0).contains(&x0) {
+        return Err("invalid design phase composition".into());
+    }
+    let roots = evaluations(t, p, [x0, 1.0 - x0])?;
+    let e = roots
+        .iter()
+        .find(|e| e.liquid_like != vapor)
+        .ok_or("specified liquid/vapor PR branch is unavailable")?;
+    Ok(DesignPhase {
+        enthalpy_j_mol: e.enthalpy,
+        ln_phi: e.ln_phi,
+        volume_m3_mol: e.volume,
+    })
+}
+
+pub(crate) fn design_phase_stable(t: f64, p: f64, x0: f64, vapor: bool) -> Result<bool, String> {
+    let x = [x0, 1.0 - x0];
+    let roots = evaluations(t, p, x)?;
+    let e = *roots
+        .iter()
+        .find(|e| e.liquid_like != vapor)
+        .ok_or("specified liquid/vapor PR branch is unavailable")?;
+    Ok(stability(t, p, x, e)? >= -2e-8)
+}
+
+/// Wilson estimate is used only to initialize the rigorous phi-phi bubble solve.
+pub(crate) fn design_wilson_k(t: f64, p: f64) -> Result<[f64; 2], String> {
+    let data = properties()?;
+    Ok(std::array::from_fn(|i| {
+        let c = &data[i].models.pr78;
+        c.critical_pressure_pascal / p
+            * (5.373 * (1.0 + c.acentric_factor) * (1.0 - c.critical_temperature_kelvin / t)).exp()
+    }))
+}
+
 // Binary tangent-plane distance. A deterministic coarse grid plus bounded local
 // minimizations checks both roots, including trace-rich endpoints. A negative
 // minimum proves instability; unresolved flash/product stability is an error.

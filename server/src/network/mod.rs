@@ -10,6 +10,8 @@ use tracing_futures::Instrument;
 use protocol::{ClientMessage, ServerMessage};
 
 use crate::voxel::VoxelWorld;
+mod distillation;
+use distillation::DesignService;
 type IndustryJob =
     tokio::task::JoinHandle<(u64, std::result::Result<crate::process::FlowStep, String>)>;
 
@@ -77,6 +79,7 @@ pub async fn serve_endpoint(
     let mut industry_clock = tokio::time::interval(std::time::Duration::from_millis(200));
     industry_clock.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut industry_job: Option<IndustryJob> = None;
+    let designer = Arc::new(Mutex::new(DesignService::default()));
 
     loop {
         tokio::select! {
@@ -84,7 +87,10 @@ pub async fn serve_endpoint(
                 info!("Shutdown signal received, stopping accept loop");
                 break;
             }
-            _ = tick.tick() => { wm.lock().await.tick(); }
+            _ = tick.tick() => {
+                wm.lock().await.tick();
+                designer.lock().await.poll().await;
+            }
             _ = industry_clock.tick() => {
                 // One bounded immutable batch; a slow solve cannot enqueue catch-up work or block player ticks.
                 if industry_job.as_ref().is_some_and(|job|job.is_finished()) {
@@ -111,6 +117,7 @@ pub async fn serve_endpoint(
                 match incoming {
                     Some(incoming) => {
                         let wm = wm.clone();
+                        let designer = designer.clone();
                         let peer = incoming.remote_address();
                         connections.spawn(
                             async move {
@@ -118,7 +125,7 @@ pub async fn serve_endpoint(
                                     Ok(connection) => {
                                         let addr = connection.remote_address();
                                         info!(%addr, "New QUIC connection");
-                                        if let Err(e) = handle_connection(connection, wm).await {
+                                        if let Err(e) = handle_connection(connection, wm, designer).await {
                                             error!(%addr, error = %e, "Connection error");
                                         }
                                     }
@@ -142,6 +149,7 @@ pub async fn serve_endpoint(
     endpoint.close(0u32.into(), b"shutdown");
     // Finish message handlers before the caller takes its final save snapshot.
     while connections.join_next().await.is_some() {}
+    designer.lock().await.shutdown().await;
     // The bounded worker cannot outlive its server session. Discard its result on shutdown;
     // callers persist the last atomically committed batch, never a partial transfer.
     if let Some(job) = industry_job {
@@ -150,8 +158,12 @@ pub async fn serve_endpoint(
     Ok(())
 }
 
-#[instrument(level = "debug", skip(connection, wm), fields(addr = %connection.remote_address()))]
-async fn handle_connection(connection: Connection, wm: Arc<Mutex<VoxelWorld>>) -> Result<()> {
+#[instrument(level = "debug", skip(connection, wm, designer), fields(addr = %connection.remote_address()))]
+async fn handle_connection(
+    connection: Connection,
+    wm: Arc<Mutex<VoxelWorld>>,
+    designer: Arc<Mutex<DesignService>>,
+) -> Result<()> {
     let (send, recv) =
         tokio::time::timeout(std::time::Duration::from_secs(10), connection.accept_bi()).await??;
     let (mut send, mut recv) = (send, recv);
@@ -161,7 +173,7 @@ async fn handle_connection(connection: Connection, wm: Arc<Mutex<VoxelWorld>>) -
         tokio::time::timeout(std::time::Duration::from_secs(10), read_frame(&mut recv)).await??;
     let msg: ClientMessage = rmp_serde::from_slice(&frame).context("deserialize login")?;
 
-    let (pid, player_rx) = match msg {
+    let (pid, player_rx, design_tx) = match msg {
         ClientMessage::Login {
             version,
             player_name,
@@ -177,26 +189,29 @@ async fn handle_connection(connection: Connection, wm: Arc<Mutex<VoxelWorld>>) -
             let (player_tx, player_rx) = mpsc::channel::<ServerMessage>(64);
 
             let world_seed = manager.world_seed;
-            let rotation =
-                match manager.register_profile(pid, player_uuid, player_name.clone(), player_tx) {
-                    Ok(rotation) => rotation,
-                    Err(e) => {
-                        drop(manager);
-                        write_frame(
-                            &mut send,
-                            &rmp_serde::to_vec(&ServerMessage::Error {
-                                code: 409,
-                                text: e.to_string(),
-                            })?,
-                        )
-                        .await?;
-                        let _ = send.finish();
-                        let _ =
-                            tokio::time::timeout(std::time::Duration::from_secs(1), send.stopped())
-                                .await;
-                        return Err(e);
-                    }
-                };
+            let rotation = match manager.register_profile(
+                pid,
+                player_uuid,
+                player_name.clone(),
+                player_tx.clone(),
+            ) {
+                Ok(rotation) => rotation,
+                Err(e) => {
+                    drop(manager);
+                    write_frame(
+                        &mut send,
+                        &rmp_serde::to_vec(&ServerMessage::Error {
+                            code: 409,
+                            text: e.to_string(),
+                        })?,
+                    )
+                    .await?;
+                    let _ = send.finish();
+                    let _ = tokio::time::timeout(std::time::Duration::from_secs(1), send.stopped())
+                        .await;
+                    return Err(e);
+                }
+            };
             drop(manager);
             if let Err(e) = write_frame(
                 &mut send,
@@ -213,10 +228,15 @@ async fn handle_connection(connection: Connection, wm: Arc<Mutex<VoxelWorld>>) -
                 return Err(e);
             }
             info!(player_id = pid, %player_name, "Player logged in");
-            (pid, player_rx)
+            (pid, player_rx, player_tx)
         }
         _ => anyhow::bail!("expected login message"),
     };
+
+    designer
+        .lock()
+        .await
+        .register(pid, design_tx, connection.clone());
 
     // Spawn forwarder: SubWorld → client
     let send_arc = Arc::new(Mutex::new(send));
@@ -282,6 +302,9 @@ async fn handle_connection(connection: Connection, wm: Arc<Mutex<VoxelWorld>>) -
                 ClientMessage::Equipment(command) => {
                     wm.lock().await.equipment_command(player_id, command);
                 }
+                ClientMessage::Distillation(command) => {
+                    designer.lock().await.command(player_id, command);
+                }
                 ClientMessage::Ping { seq } => {
                     let pong = ServerMessage::Pong { seq };
                     let data = rmp_serde::to_vec(&pong)?;
@@ -302,6 +325,7 @@ async fn handle_connection(connection: Connection, wm: Arc<Mutex<VoxelWorld>>) -
     .await;
 
     // Cleanup
+    designer.lock().await.unregister(player_id);
     let mut wm = wm.lock().await;
     wm.unregister_player(player_id);
     if let Err(e) = wm.checkpoint() {

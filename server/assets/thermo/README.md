@@ -55,3 +55,21 @@ Regenerate the 250-state oracle fixture from the repository root with
 required). It compiles the original Java kernel and deterministic math classes in
 `target/thermo-oracle/`; it does not call or copy results from the Rust solver.
 The fixture and data are tracked; compiled Java classes are build outputs.
+
+The binary distillation design calculator (`server/src/distillation.rs`) uses
+these same phase roots, fugacities and enthalpies at a fixed column pressure.
+It models 2–12 ideal trays, one feed, a saturated-liquid total condenser and an
+equilibrium reboiler. A damped Newton solve closes component and enthalpy balances;
+phi-phi bubble-point solves determine each tray's temperature and vapour composition.
+Constant molar overflow and Wilson K values are initialization estimates only.
+Reported streams are independently re-evaluated for both component balances,
+tray/condenser/reboiler/overall energy balances, fugacity equality and phase stability.
+Cancellation, iteration bounds and an eight-second wall-clock budget bound the work.
+No material or energy is taken from the live world; the calculator does not alter
+the property revision or the energy datum of existing saved equipment.
+
+The column tests establish numerical closure, stream scaling and rejection of
+invalid/tampered results. They are not independent experimental column benchmarks,
+nor a qualification of tray efficiencies, hydraulics, flooding or mechanical design.
+Some otherwise valid inputs require saturation temperatures outside this package's
+domain; these fail rather than extrapolating or publishing a partial design.

@@ -40,6 +40,8 @@ const ACTIONS: &[&str] = &[
     "industry-route-graphics",
     "industry-design",
     "industry-design-graphics",
+    "distillation",
+    "distillation-graphics",
     "streaming",
     "commands",
     "streaming-perf",
@@ -163,6 +165,8 @@ fn execute() -> Result {
                         "industrial_parameterized_tanks_and_assembly_emit_graphics_fixture",
                     )),
                 ),
+                "distillation" => ("distillation", true, None),
+                "distillation-graphics" => ("distillation", false, None),
                 "containers" => (
                     "containers",
                     true,

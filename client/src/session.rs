@@ -29,6 +29,14 @@ pub struct Session {
     pub assembly_pending: bool,
     assembly_request: u64,
     assembly_master: Option<u64>,
+    pub distillation_open: bool,
+    pub distillation_reply: Option<DistillationReply>,
+    pub distillation_spec: Option<DistillationSpec>,
+    pub distillation_pending: bool,
+    pub distillation_message: String,
+    distillation_request: u64,
+    distillation_active: Option<u64>,
+    distillation_cancel_pending: Option<u64>,
     pub pipe_mode: bool,
     pub pipe_start: Option<PipeAnchor>,
     pub pipe_target: Option<PipeAnchor>,
@@ -60,6 +68,14 @@ impl Default for Session {
             assembly_pending: false,
             assembly_request: 0,
             assembly_master: None,
+            distillation_open: false,
+            distillation_reply: None,
+            distillation_spec: None,
+            distillation_pending: false,
+            distillation_message: String::new(),
+            distillation_request: 0,
+            distillation_active: None,
+            distillation_cancel_pending: None,
             pipe_mode: false,
             pipe_start: None,
             pipe_target: None,
@@ -143,6 +159,9 @@ impl Session {
         self.tank_size = TankSize::default();
         self.clear_assembly();
         self.assembly_request = 0;
+        self.clear_distillation();
+        self.distillation_request = 0;
+        self.distillation_cancel_pending = None;
         self.clear_pipe_route();
         self.pipe_request = 0;
         self.generation += 1;
@@ -214,6 +233,8 @@ impl Session {
             self.generation += 1;
             self.clear_pipe_route();
             self.clear_assembly();
+            self.clear_distillation();
+            self.distillation_cancel_pending = None;
             if let Some(server) = &mut self.local_server {
                 self.local_error = true;
                 server.stop();
@@ -225,6 +246,121 @@ impl Session {
         if let Some(reply) = self.model.assembly_reply.take() {
             self.accept_assembly_reply(reply);
         }
+        if let Some(reply) = self.model.distillation_reply.take() {
+            self.accept_distillation_reply(reply);
+        }
+        self.flush_distillation_cancel();
+    }
+    pub fn open_distillation(&mut self) -> bool {
+        if !self.model.ready || self.demo || self.model.hp <= 0 {
+            return false;
+        }
+        self.distillation_open = true;
+        true
+    }
+    fn clear_distillation(&mut self) {
+        self.distillation_open = false;
+        self.distillation_reply = None;
+        self.distillation_spec = None;
+        self.distillation_pending = false;
+        self.distillation_message.clear();
+        self.distillation_active = None;
+        self.model.distillation_reply = None;
+    }
+    pub fn close_distillation(&mut self) {
+        self.cancel_distillation();
+        self.clear_distillation();
+    }
+    fn flush_distillation_cancel(&mut self) {
+        if let (Some(request_id), Some(transport)) =
+            (self.distillation_cancel_pending, &self.transport)
+        {
+            if transport
+                .send(ClientMessage::Distillation(DistillationCommand::Cancel {
+                    request_id,
+                }))
+                .is_ok()
+            {
+                self.distillation_cancel_pending = None;
+            }
+        }
+    }
+    pub fn cancel_distillation(&mut self) {
+        if self.distillation_pending {
+            self.distillation_cancel_pending = self.distillation_active;
+        }
+        self.distillation_active = None;
+        self.distillation_pending = false;
+        self.distillation_reply = None;
+        self.distillation_message = "已取消请求。".into();
+        self.flush_distillation_cancel();
+    }
+    pub fn calculate_distillation(&mut self, spec: DistillationSpec) -> bool {
+        if !self.distillation_open || !self.model.ready || self.demo || self.model.hp <= 0 {
+            return false;
+        }
+        self.flush_distillation_cancel();
+        if self.distillation_cancel_pending.is_some() {
+            self.distillation_message = "等待取消请求进入发送队列，请稍后重试。".into();
+            return false;
+        }
+        if !spec.valid() {
+            self.distillation_message = "参数超出计算器支持范围，请检查输入。".into();
+            return false;
+        }
+        if self.distillation_pending {
+            self.distillation_message = "请等待当前计算，或先取消。".into();
+            return false;
+        }
+        let Some(request_id) = self
+            .distillation_request
+            .checked_add(1)
+            .filter(|id| *id <= i64::MAX as u64)
+        else {
+            self.distillation_message = "计算请求编号已用尽，请重连。".into();
+            return false;
+        };
+        let Some(transport) = &self.transport else {
+            return false;
+        };
+        match transport.send(ClientMessage::Distillation(
+            DistillationCommand::Calculate {
+                request_id,
+                spec: spec.clone(),
+            },
+        )) {
+            Ok(()) => {
+                self.distillation_request = request_id;
+                self.distillation_active = Some(request_id);
+                self.distillation_spec = Some(spec);
+                self.distillation_reply = None;
+                self.distillation_pending = true;
+                self.distillation_message.clear();
+                true
+            }
+            Err(error) => {
+                self.distillation_message = error;
+                false
+            }
+        }
+    }
+    fn accept_distillation_reply(&mut self, reply: DistillationReply) {
+        if !self.distillation_open
+            || self.distillation_active != Some(reply.request_id)
+            || !reply.valid()
+        {
+            return;
+        }
+        if self
+            .distillation_reply
+            .as_ref()
+            .is_some_and(|old| old.status != DistillationStatus::Running)
+        {
+            return;
+        }
+        self.distillation_pending = reply.status == DistillationStatus::Running;
+        self.distillation_message.clear();
+        self.distillation_reply = Some(reply);
     }
     pub fn clear_assembly(&mut self) {
         self.assembly_master = None;
@@ -835,6 +971,93 @@ impl Session {
 #[cfg(test)]
 mod pipe_tests {
     use super::*;
+
+    #[test]
+    fn distillation_send_cancel_retry_and_late_results_obey_session_lifetime() {
+        let mut session = Session::default();
+        session.model.ready = true;
+        session.transport = Some(Box::new(Queue { fail: true }));
+        assert!(session.open_distillation());
+        assert!(!session.calculate_distillation(DistillationSpec::default()));
+        assert_eq!(session.distillation_request, 0);
+        assert!(!session.distillation_pending);
+        session.transport = Some(Box::new(Queue { fail: false }));
+        assert!(session.calculate_distillation(DistillationSpec::default()));
+        assert_eq!(session.distillation_active, Some(1));
+        session.transport = Some(Box::new(Queue { fail: true }));
+        session.close_distillation();
+        assert!(!session.distillation_open && !session.distillation_pending);
+        assert_eq!(session.distillation_cancel_pending, Some(1));
+        assert!(session.open_distillation());
+        assert!(!session.calculate_distillation(DistillationSpec::default()));
+        assert_eq!(session.distillation_request, 1);
+        assert!(session.distillation_active.is_none());
+        session.close_distillation();
+        session.accept_distillation_reply(DistillationReply {
+            request_id: 1,
+            status: DistillationStatus::Failed,
+            message: "late".into(),
+            result: None,
+        });
+        assert!(session.distillation_reply.is_none());
+        session.transport = Some(Box::new(Queue { fail: false }));
+        session.tick();
+        assert!(session.distillation_cancel_pending.is_none());
+        assert!(session.open_distillation());
+        assert!(session.calculate_distillation(DistillationSpec::default()));
+        session.accept_distillation_reply(DistillationReply {
+            request_id: 1,
+            status: DistillationStatus::Failed,
+            message: "older request".into(),
+            result: None,
+        });
+        assert!(session.distillation_pending && session.distillation_reply.is_none());
+        session.accept_distillation_reply(DistillationReply {
+            request_id: 2,
+            status: DistillationStatus::Failed,
+            message: "current failure".into(),
+            result: None,
+        });
+        assert!(!session.distillation_pending);
+        session.accept_distillation_reply(DistillationReply {
+            request_id: 2,
+            status: DistillationStatus::Running,
+            message: "late running".into(),
+            result: None,
+        });
+        assert_eq!(
+            session.distillation_reply.as_ref().unwrap().status,
+            DistillationStatus::Failed
+        );
+        session.disconnect();
+        assert!(!session.distillation_open && session.distillation_reply.is_none());
+        assert!(
+            session.distillation_spec.is_none() && session.distillation_cancel_pending.is_none()
+        );
+        assert_eq!(session.distillation_request, 0);
+    }
+
+    #[test]
+    fn distillation_invalid_input_and_demo_do_not_create_jobs() {
+        let mut session = Session {
+            transport: Some(Box::new(Queue { fail: false })),
+            ..Default::default()
+        };
+        assert!(!session.open_distillation());
+        session.model.ready = true;
+        session.demo = true;
+        assert!(!session.open_distillation());
+        session.demo = false;
+        assert!(session.open_distillation());
+        let spec = DistillationSpec {
+            feed_tray: 0,
+            ..Default::default()
+        };
+        assert!(!session.calculate_distillation(spec));
+        assert!(!session.distillation_pending && session.distillation_request == 0);
+        session.model.hp = 0;
+        assert!(!session.calculate_distillation(DistillationSpec::default()));
+    }
 
     #[test]
     fn assembly_replies_ignore_closed_panels_old_requests_and_other_masters() {

@@ -70,10 +70,6 @@ doc:
 clean:
     cargo clean
 
-# 检查纯 Rust 核心的 WASM 可移植性
-web-check:
-    cargo check -p protocol -p game-client-core -p game-simulation --target wasm32-unknown-unknown --jobs 2
-
 # 构建扩展并打开正式项目编辑器
 editor:
     cargo +nightly -Zscript scripts/godot.rs editor
@@ -136,6 +132,13 @@ godot-industry-design:
 
 godot-industry-design-graphics:
     cargo +nightly -Zscript scripts/godot.rs industry-design-graphics
+
+# Binary steady-state column calculator; no material is taken from the world.
+godot-distillation:
+    cargo +nightly -Zscript scripts/godot.rs distillation
+
+godot-distillation-graphics:
+    cargo +nightly -Zscript scripts/godot.rs distillation-graphics
 
 # 真实 QUIC 探索后在图形窗口验证负坐标区块加载、卸载与保存
 godot-streaming:
