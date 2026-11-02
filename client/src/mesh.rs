@@ -6,6 +6,9 @@ pub struct Vertex {
     pub color: [f32; 3],
     pub uv: [f32; 2],
     pub pattern: u32,
+    pub occlusion: f32,
+    /// Four two-bit corner occluder counts, shared by both triangles (UV order).
+    pub face_occlusion: u8,
 }
 #[derive(Default)]
 pub struct Mesh {
@@ -21,6 +24,8 @@ impl Mesh {
                 color,
                 uv: uv[i],
                 pattern,
+                occlusion: 1.0,
+                face_occlusion: 0,
             });
         }
     }

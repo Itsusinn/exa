@@ -154,6 +154,13 @@ func _setup_world() -> void:
 	sun.light_angular_distance = 1.2
 	sun.shadow_enabled = true
 	sun.directional_shadow_max_distance = 100
+	sun.directional_shadow_mode = DirectionalLight3D.SHADOW_PARALLEL_4_SPLITS
+	sun.directional_shadow_blend_splits = true
+	sun.directional_shadow_split_1 = 0.1
+	sun.directional_shadow_split_2 = 0.25
+	sun.directional_shadow_split_3 = 0.5
+	sun.shadow_bias = 0.03
+	sun.shadow_normal_bias = 0.5
 	add_child(sun)
 	environment = Environment.new()
 	environment.background_mode = Environment.BG_SKY
@@ -174,8 +181,9 @@ func _setup_world() -> void:
 	environment.sdfgi_use_occlusion = true
 	environment.sdfgi_bounce_feedback = 0.3
 	environment.ssao_enabled = true
-	environment.ssao_radius = 0.7
-	environment.ssao_intensity = 1.1
+	# Vertex AO supplies block contacts; SSAO adds small dynamic-object contacts.
+	environment.ssao_radius = 0.45
+	environment.ssao_intensity = 0.65
 	environment.fog_enabled = true
 	environment.fog_light_color = Color("bfcbd1")
 	environment.fog_density = 0.0015

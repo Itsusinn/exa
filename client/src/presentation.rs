@@ -348,6 +348,8 @@ fn cylinder_section(
             color,
             uv: uv[index],
             pattern: 0,
+            occlusion: 1.0,
+            face_occlusion: 0,
         }));
         for (end, (along, sign)) in [(0.0, -1.0), (length, 1.0)].into_iter().enumerate() {
             if !caps[end] {
@@ -382,6 +384,29 @@ pub fn terrain_chunk(model: &Client3d, origin: [i32; 3]) -> Mesh {
         let adjacent = std::array::from_fn(|i| origin[i] + n[i] as i32 * CHUNK_EDGE);
         model.terrain.blocks.get(&adjacent)
     });
+    // One-cell halo includes edge/corner sections for view-independent contact AO.
+    // Unknown cells and water do not invent opaque occluders at streaming borders.
+    let sections: [_; 27] = std::array::from_fn(|i| {
+        let offset = [i % 3, i / 9, i / 3 % 3];
+        model.terrain.blocks.get(&std::array::from_fn(|axis| {
+            origin[axis] + (offset[axis] as i32 - 1) * CHUNK_EDGE
+        }))
+    });
+    let mut halo = [false; 18 * 18 * 18];
+    for y in 0..18 {
+        for z in 0..18 {
+            for x in 0..18 {
+                let p = [x as i32 - 1, y as i32 - 1, z as i32 - 1];
+                let section = p.map(|v| (v.div_euclid(16) + 1) as usize);
+                let local = p.map(|v| v.rem_euclid(16) as usize);
+                let b = sections[section[0] + 3 * (section[2] + 3 * section[1])]
+                    .map_or(255, |blocks| {
+                        blocks[local[0] + 16 * (local[2] + 16 * local[1])]
+                    });
+                halo[x + 18 * (z + 18 * y)] = !matches!(b, AIR | WATER | 255);
+            }
+        }
+    }
     for ly in 0..16usize {
         for lz in 0..16usize {
             for lx in 0..16usize {
@@ -449,11 +474,60 @@ pub fn terrain_chunk(model: &Client3d, origin: [i32; 3]) -> Mesh {
                         color,
                         pattern,
                     );
+                    let start = mesh.vertices.len() - 6;
+                    for vertex in &mut mesh.vertices[start..] {
+                        let n = NORMALS[face].map(|v| v as i32);
+                        let axes = match face / 2 {
+                            0 => [1, 2],
+                            1 => [0, 2],
+                            _ => [0, 1],
+                        };
+                        let base = [
+                            lx as i32 + 1 + n[0],
+                            ly as i32 + 1 + n[1],
+                            lz as i32 + 1 + n[2],
+                        ];
+                        let mut a = base;
+                        let mut b = base;
+                        let cell = [x, y, z];
+                        a[axes[0]] += if vertex.position[axes[0]] > cell[axes[0]] as f32 {
+                            1
+                        } else {
+                            -1
+                        };
+                        b[axes[1]] += if vertex.position[axes[1]] > cell[axes[1]] as f32 {
+                            1
+                        } else {
+                            -1
+                        };
+                        let diagonal = std::array::from_fn(|i| a[i] + b[i] - base[i]);
+                        let occupied = |p: [i32; 3]| {
+                            halo[p[0] as usize + 18 * (p[2] as usize + 18 * p[1] as usize)]
+                        };
+                        vertex.occlusion =
+                            corner_occlusion(occupied(a), occupied(b), occupied(diagonal));
+                    }
+                    let corners = [0, 2, 1, 4].map(|i| mesh.vertices[start + i].occlusion);
+                    let packed = corners.into_iter().enumerate().fold(0u8, |bits, (i, ao)| {
+                        bits | (((1.0 - ao) / 0.18).round() as u8).min(3) << (2 * i)
+                    });
+                    for vertex in &mut mesh.vertices[start..] {
+                        vertex.face_occlusion = packed;
+                    }
                 }
             }
         }
     }
     mesh
+}
+
+fn corner_occlusion(a: bool, b: bool, diagonal: bool) -> f32 {
+    let count = if a && b {
+        3
+    } else {
+        u8::from(a) + u8::from(b) + u8::from(diagonal)
+    };
+    1.0 - f32::from(count) * 0.18
 }
 
 pub fn actors(model: &Client3d) -> Mesh {
@@ -938,6 +1012,47 @@ mod tests {
             }
         }
         assert!(terrain_chunk(&m, [-16, 0, 0]).vertices.is_empty());
+    }
+
+    #[test]
+    fn contact_ao_crosses_negative_section_corners_and_clears_on_removal() {
+        let mut m = Client3d::default();
+        m.terrain = Grid::empty();
+        for x in [-16, 0] {
+            for z in [-16, 0] {
+                assert!(m.terrain.apply_chunk([x, 0, z], &[AIR; 4096]));
+            }
+        }
+        m.terrain.set([-1, 7, -1], STONE);
+        let top_corner = |m: &Client3d| {
+            terrain_chunk(m, [-16, 0, -16])
+                .vertices
+                .into_iter()
+                .find(|v| v.normal == [0.0, 1.0, 0.0] && v.position == [0.0, 8.0, 0.0])
+                .unwrap()
+                .occlusion
+        };
+        assert_eq!(top_corner(&m), 1.0);
+        m.terrain.set([0, 8, 0], STONE);
+        assert!((top_corner(&m) - 0.82).abs() < 0.001);
+        // The diagonal blocker touches only UV corner 3. Both triangles must
+        // carry the complete face data, rather than interpolating packed bits.
+        let mesh = terrain_chunk(&m, [-16, 0, -16]);
+        let top: Vec<_> = mesh
+            .vertices
+            .iter()
+            .filter(|v| v.normal == [0.0, 1.0, 0.0])
+            .collect();
+        assert_eq!(top.len(), 6);
+        assert!(top.iter().all(|v| v.face_occlusion == 64));
+        m.terrain.set([0, 8, -1], STONE);
+        m.terrain.set([-1, 8, 0], STONE);
+        assert!((top_corner(&m) - 0.46).abs() < 0.001);
+        m.terrain.set([0, 8, 0], AIR);
+        assert!((top_corner(&m) - 0.46).abs() < 0.001);
+        m.terrain.set([0, 8, -1], WATER);
+        m.terrain.set([-1, 8, 0], AIR);
+        assert_eq!(top_corner(&m), 1.0);
     }
 
     #[test]

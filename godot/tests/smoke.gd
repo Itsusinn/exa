@@ -100,7 +100,9 @@ func run() -> void:
 	scene._demo()
 	scene._process(0.0)
 	check(scene.camera.position.distance_to(Vector3(28.5,8.58,32.5)) < 0.001,"new session resets camera interpolation")
-	for i in range(64): scene._process(0.0)
+	# At least one chunk advances per call; the time budget can defer the second.
+	var pending_count: int = scene.terrain_pending.size()
+	for i in range(pending_count + 1): scene._process(0.0)
 	check(scene.terrain_pending.is_empty(),"terrain queue drains without a new map revision")
 	var previous_save := OS.get_environment("CDDA_SAVE_PATH")
 	var isolated_save := ProjectSettings.globalize_path("res://../target/godot-ui-%d/world3d.bin" % Time.get_ticks_usec())

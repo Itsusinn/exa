@@ -15,10 +15,17 @@ uniform sampler2D bark_normal : hint_normal, filter_linear_mipmap_anisotropic, r
 uniform sampler2D bark_rough : filter_linear_mipmap_anisotropic, repeat_enable;
 varying vec3 world_position;
 varying vec3 world_normal;
+varying vec4 corner_ao;
+uniform float contact_ao_strength : hint_range(0.0,1.0) = 0.85;
 
 void vertex() {
     world_position = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
     world_normal = normalize(MODEL_NORMAL_MATRIX * NORMAL);
+    // Decode before interpolation. Each face carries the same four samples on
+    // both triangles, so the diagonal cannot introduce a lighting crease.
+    int packed_ao = int(round(UV2.y));
+    corner_ao = vec4(float(packed_ao & 3),float((packed_ao >> 2) & 3),
+                     float((packed_ao >> 4) & 3),float((packed_ao >> 6) & 3));
 }
 
 // Derive a tangent frame from the actual surface projection. Chunk meshes do
@@ -88,6 +95,9 @@ void fragment() {
         vec3 tint = albedo;
         float grain = fract(sin(dot(floor(plane*24.0),vec2(127.1,311.7)))*43758.5453);
         float broad = fract(sin(dot(floor(plane*3.0),vec2(269.5,183.3)))*43758.5453);
+        float footprint = max(length(dFdx(plane)),length(dFdy(plane)));
+        grain = mix(grain,0.5,smoothstep(0.5,1.5,footprint*24.0));
+        broad = mix(broad,0.5,smoothstep(0.5,1.5,footprint*3.0));
         albedo = tint * (0.82+grain*0.3);
         if (pattern == 8 || pattern == 9 || pattern == 14) {
             float rock = dot(texture(stone_color,coords).rgb,vec3(0.333));
@@ -118,7 +128,17 @@ void fragment() {
         }
     }
     ALBEDO = albedo;
-    NORMAL = surface_normal(detail_normal,coords,VERTEX,NORMAL);
-    ROUGHNESS = clamp(roughness,0.32,0.98);
+    // Smooth bilinear interpolation has zero slope at shared block boundaries;
+    // unlike triangle interpolation it remains smooth across the face diagonal.
+    vec2 blend = smoothstep(vec2(0.0),vec2(1.0),UV);
+    float occluders = mix(mix(corner_ao.x,corner_ao.y,blend.x),
+                          mix(corner_ao.w,corner_ao.z,blend.x),blend.y);
+    AO = 1.0 - occluders * 0.18 * contact_ao_strength;
+    AO_LIGHT_AFFECT = 0.2;
+    vec3 mapped_normal = surface_normal(detail_normal,coords,VERTEX,NORMAL);
+    // Increase the specular lobe width for unresolved normal detail.
+    float variance = dot(dFdx(mapped_normal),dFdx(mapped_normal)) + dot(dFdy(mapped_normal),dFdy(mapped_normal));
+    NORMAL = mapped_normal;
+    ROUGHNESS = clamp(sqrt(roughness*roughness + min(variance,0.18)),0.32,0.98);
     METALLIC = metal;
 }

@@ -63,12 +63,14 @@ impl Default for Client3d {
 impl Client3d {
     fn dirty_section(&mut self, origin: [i32; 3]) {
         self.dirty_chunks.insert(origin);
-        for axis in 0..3 {
-            for step in [-CHUNK_EDGE, CHUNK_EDGE] {
-                let mut adjacent = origin;
-                adjacent[axis] += step;
-                if protocol::valid_voxel(adjacent) {
-                    self.dirty_chunks.insert(adjacent);
+        // Corner AO reads the full one-cell halo, including diagonal sections.
+        for x in [-CHUNK_EDGE, 0, CHUNK_EDGE] {
+            for y in [-CHUNK_EDGE, 0, CHUNK_EDGE] {
+                for z in [-CHUNK_EDGE, 0, CHUNK_EDGE] {
+                    let adjacent = [origin[0] + x, origin[1] + y, origin[2] + z];
+                    if protocol::valid_voxel(adjacent) {
+                        self.dirty_chunks.insert(adjacent);
+                    }
                 }
             }
         }
@@ -571,7 +573,7 @@ mod tests {
     }
 
     #[test]
-    fn changed_chunk_updates_collision_and_invalidates_adjacent_faces_only() {
+    fn changed_chunk_updates_collision_and_invalidates_only_the_ao_halo() {
         let mut m = model();
         m.terrain.set([15, 2, 8], STONE);
         let mut updated = m.terrain.clone();
@@ -581,17 +583,9 @@ mod tests {
             blocks: updated.chunk([0, 0, 0]),
         });
         assert!(!m.terrain.solid([15, 2, 8]));
-        assert_eq!(
-            m.dirty_chunks,
-            BTreeSet::from([
-                [0, 0, 0],
-                [-16, 0, 0],
-                [0, 0, -16],
-                [16, 0, 0],
-                [0, 16, 0],
-                [0, 0, 16]
-            ])
-        );
+        assert_eq!(m.dirty_chunks.len(), 18);
+        assert!(m.dirty_chunks.contains(&[-16, 16, -16]));
+        assert!(m.dirty_chunks.contains(&[16, 0, 16]));
         assert!(!m.dirty_chunks.contains(&[48, 0, 48]));
     }
 }
