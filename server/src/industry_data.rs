@@ -6,8 +6,8 @@ use protocol::{EquipmentKind, EquipmentSnapshot, MaterialAmount, AIR, MAX_EQUIPM
 use rkyv::{rancor::Error, Archive, Deserialize, Serialize};
 use std::{collections::BTreeMap, path::Path};
 
-pub const DATA_VERSION: u32 = 4;
-const MAGIC: &[u8; 8] = b"DNGIND04";
+pub const DATA_VERSION: u32 = 5;
+const MAGIC: &[u8; 8] = b"DNGIND05";
 
 /// External transfers are explicit; energy includes the fluid's gravitational energy.
 #[derive(Archive, Serialize, Deserialize, Debug, Clone, Default, PartialEq)]
@@ -65,6 +65,7 @@ pub struct EquipmentData {
     pub pump_reversed: bool,
     pub thermal: Option<ThermalData>,
     pub pipe_ends: Option<[u8; 2]>,
+    pub tank_size: Option<[u8; 2]>,
 }
 #[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct ThermalData {
@@ -129,6 +130,7 @@ impl EquipmentData {
             pump_reversed: value.pump_reversed,
             thermal: value.thermal.as_ref().map(ThermalData::capture),
             pipe_ends: value.pipe_ends,
+            tank_size: value.tank_size.map(|s| [s.diameter, s.height]),
         }
     }
     fn restore(&self) -> Result<EquipmentSnapshot> {
@@ -167,6 +169,9 @@ impl EquipmentData {
                 .transpose()?,
             reading: None,
             pipe_ends: self.pipe_ends,
+            tank_size: self
+                .tank_size
+                .map(|[diameter, height]| protocol::TankSize { diameter, height }),
         };
         anyhow::ensure!(value.valid(), "invalid equipment facts");
         Ok(value)
@@ -277,6 +282,118 @@ pub fn read(path: &Path) -> Result<IndustryArchive> {
     rkyv::from_bytes::<IndustryArchive, Error>(mapped.payload()).context("decode industry archive")
 }
 
+// Exact version-four layout, before parameterized tank sizes were appended.
+#[derive(Archive, Serialize, Deserialize)]
+struct V4Equipment {
+    id: u64,
+    revision: u64,
+    kind: String,
+    origin: [i32; 3],
+    axis: u8,
+    contents: Vec<Component>,
+    internal_energy_j: f64,
+    enabled: bool,
+    opening: f64,
+    pump_reversed: bool,
+    thermal: Option<ThermalData>,
+    pipe_ends: Option<[u8; 2]>,
+}
+#[derive(Archive, Serialize, Deserialize)]
+struct V4Archive {
+    data_version: u32,
+    thermo_revision: String,
+    generation: String,
+    seed: u64,
+    last_update: u64,
+    revision: u64,
+    next_id: u64,
+    equipment: Vec<V4Equipment>,
+    ledger: ExchangeLedger,
+}
+pub fn read_v4(path: &Path) -> Result<IndustryArchive> {
+    let mapped = MappedArchive::open(path, b"DNGIND04")?;
+    let old = rkyv::from_bytes::<V4Archive, Error>(mapped.payload())
+        .context("decode stage-four industry archive")?;
+    anyhow::ensure!(
+        old.data_version == 4,
+        "unsupported version-four industry archive"
+    );
+    anyhow::ensure!(
+        old.equipment.iter().all(|e| matches!(
+            e.kind.as_str(),
+            "game:tank"
+                | "game:pipe"
+                | "game:pump"
+                | "game:valve"
+                | "game:vessel"
+                | "game:heat_exchanger"
+                | "game:pipe_rack"
+        )),
+        "unknown version-four equipment kind"
+    );
+    Ok(IndustryArchive {
+        data_version: DATA_VERSION,
+        thermo_revision: old.thermo_revision,
+        generation: old.generation,
+        seed: old.seed,
+        last_update: old.last_update,
+        revision: old.revision,
+        next_id: old.next_id,
+        ledger: old.ledger,
+        equipment: old
+            .equipment
+            .into_iter()
+            .map(|e| EquipmentData {
+                id: e.id,
+                revision: e.revision,
+                kind: e.kind,
+                origin: e.origin,
+                axis: e.axis,
+                contents: e.contents,
+                internal_energy_j: e.internal_energy_j,
+                enabled: e.enabled,
+                opening: e.opening,
+                pump_reversed: e.pump_reversed,
+                thermal: e.thermal,
+                pipe_ends: e.pipe_ends,
+                tank_size: None,
+            })
+            .collect(),
+    })
+}
+#[cfg(test)]
+pub(crate) fn write_v4_fixture(path: &Path, a: &IndustryArchive) -> Result<()> {
+    let old = V4Archive {
+        data_version: 4,
+        thermo_revision: a.thermo_revision.clone(),
+        generation: a.generation.clone(),
+        seed: a.seed,
+        last_update: a.last_update,
+        revision: a.revision,
+        next_id: a.next_id,
+        ledger: a.ledger.clone(),
+        equipment: a
+            .equipment
+            .iter()
+            .map(|e| V4Equipment {
+                id: e.id,
+                revision: e.revision,
+                kind: e.kind.clone(),
+                origin: e.origin,
+                axis: e.axis,
+                contents: e.contents.clone(),
+                internal_energy_j: e.internal_energy_j,
+                enabled: e.enabled,
+                opening: e.opening,
+                pump_reversed: e.pump_reversed,
+                thermal: e.thermal.clone(),
+                pipe_ends: e.pipe_ends,
+            })
+            .collect(),
+    };
+    archive_io::write_new(path, b"DNGIND04", &rkyv::to_bytes::<Error>(&old)?)
+}
+
 // Exact version-three layout, before explicit routed pipe ends were appended.
 #[derive(Archive, Serialize, Deserialize)]
 struct V3Equipment {
@@ -349,6 +466,7 @@ pub fn read_v3(path: &Path) -> Result<IndustryArchive> {
                 pump_reversed: e.pump_reversed,
                 thermal: e.thermal,
                 pipe_ends: None,
+                tank_size: None,
             })
             .collect(),
     })
@@ -454,6 +572,7 @@ pub fn read_v2(path: &Path) -> Result<IndustryArchive> {
                 pump_reversed: e.pump_reversed,
                 thermal: None,
                 pipe_ends: None,
+                tank_size: None,
             })
             .collect(),
         ledger: ExchangeLedger {
@@ -559,6 +678,7 @@ pub fn read_legacy(path: &Path) -> Result<IndustryArchive> {
                 pump_reversed: false,
                 thermal: None,
                 pipe_ends: None,
+                tank_size: None,
             })
             .collect(),
     })

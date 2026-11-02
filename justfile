@@ -130,6 +130,13 @@ godot-industry-route:
 godot-industry-route-graphics:
     cargo +nightly -Zscript scripts/godot.rs industry-route-graphics
 
+# Parameterized tanks and request-only heat unit inspection.
+godot-industry-design:
+    cargo +nightly -Zscript scripts/godot.rs industry-design
+
+godot-industry-design-graphics:
+    cargo +nightly -Zscript scripts/godot.rs industry-design-graphics
+
 # 真实 QUIC 探索后在图形窗口验证负坐标区块加载、卸载与保存
 godot-streaming:
     cargo +nightly -Zscript scripts/godot.rs streaming

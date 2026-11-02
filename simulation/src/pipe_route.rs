@@ -311,6 +311,7 @@ mod tests {
             opening: 1.0,
             pump_reversed: false,
             pipe_ends: None,
+            tank_size: None,
             thermal: None,
             reading: None,
         }

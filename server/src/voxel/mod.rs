@@ -1,3 +1,4 @@
+mod assembly;
 mod commands;
 mod containers;
 mod editing;
@@ -30,6 +31,8 @@ struct Player {
     industry_revision: Option<u64>,
     pipe_start: Option<PipeAnchor>,
     pipe_reply: Option<PipeRouteReply>,
+    assembly_report: Option<AssemblyReport>,
+    assembly_after: u64,
     uuid: Option<[u8; 16]>,
     name: String,
     body: Body,
@@ -73,6 +76,7 @@ pub struct VoxelWorld {
     industry_revision: u64,
     next_equipment_id: u64,
     industry_ledger: crate::industry_data::ExchangeLedger,
+    assembly_structure: Vec<crate::assembly::Structure>,
 }
 impl VoxelWorld {
     /// Validate the embedded generation assets before accepting a session.
@@ -194,6 +198,7 @@ impl VoxelWorld {
             industry_revision: 0,
             industry_ledger: crate::industry_data::ExchangeLedger::default(),
             next_equipment_id: 1,
+            assembly_structure: vec![],
         }
     }
     pub fn player_count(&self) -> usize {
@@ -221,6 +226,8 @@ impl VoxelWorld {
                 industry_revision: None,
                 pipe_start: None,
                 pipe_reply: None,
+                assembly_report: None,
+                assembly_after: 0,
                 uuid: None,
                 name: String::new(),
                 body: Body {
@@ -562,7 +569,7 @@ impl VoxelWorld {
         anyhow::ensure!(bytes.starts_with(b"DNG3D001"),"not a 3D save; legacy 2D saves are preserved and require explicit migration. Use a new CDDA_SAVE_PATH");
         let saved: Save = rmp_serde::from_slice(&bytes[8..]).context("decode 3D world")?;
         anyhow::ensure!(
-            matches!(saved.version, 1..=11)
+            matches!(saved.version, 1..=12)
                 && saved.size
                     == if saved.version >= 7 {
                         [0, WORLD_HEIGHT, 0]
@@ -645,7 +652,7 @@ impl VoxelWorld {
                 );
                 world.load_industry_checkpoint(path, &generation, saved.version)?;
             }
-            if saved.version < 11 {
+            if saved.version < 12 {
                 containers::backup_version(path, &bytes, saved.version)?;
             }
             return Ok(world);
@@ -706,7 +713,7 @@ impl VoxelWorld {
         self.write_entity_checkpoint(path, &player_archive)?;
         self.write_industry_checkpoint(path, &player_archive)?;
         let saved = Save {
-            version: 11,
+            version: 12,
             size: [0, WORLD_HEIGHT, 0],
             generated_columns: Some(self.terrain.columns().into_iter().collect()),
             seed: self.world_seed,

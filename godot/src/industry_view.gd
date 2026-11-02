@@ -41,6 +41,17 @@ var route_nodes: Array[MeshInstance3D] = []
 var route_revision := -1
 var route_start: MeshInstance3D
 var route_target: MeshInstance3D
+var build_opened := false
+var build_panel: PanelContainer
+var build_diameter: SpinBox
+var build_height: SpinBox
+var build_title: Label
+var build_capacity: Label
+var build_apply: Button
+var assembly_button: Button
+var assembly_facts: Label
+var assembly_started := 0
+var assembly_display_key := ""
 signal close_requested
 
 func _ready() -> void:
@@ -92,6 +103,13 @@ func _ready() -> void:
 	thermal_facts = Label.new()
 	thermal_facts.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	content.add_child(thermal_facts)
+	assembly_button = Button.new()
+	assembly_button.text = "检查换热单元结构"
+	assembly_button.pressed.connect(_check_assembly)
+	content.add_child(assembly_button)
+	assembly_facts = Label.new()
+	assembly_facts.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	content.add_child(assembly_facts)
 	thermal_controls = VBoxContainer.new()
 	thermal_controls.add_theme_constant_override("separation",8)
 	content.add_child(thermal_controls)
@@ -139,11 +157,77 @@ func _ready() -> void:
 	close.pressed.connect(func(): close_requested.emit())
 	column.add_child(close)
 	panel.hide()
+	build_panel = PanelContainer.new()
+	build_panel.theme = Palette.create()
+	build_panel.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
+	build_panel.offset_left = -240
+	build_panel.offset_right = 240
+	build_panel.offset_top = -150
+	build_panel.offset_bottom = 150
+	canvas.add_child(build_panel)
+	var build_column := VBoxContainer.new()
+	build_column.add_theme_constant_override("separation",16)
+	build_panel.add_child(build_column)
+	build_title = Label.new()
+	build_column.add_child(build_title)
+	build_diameter = _build_number(build_column,"直径 (m)",2,6)
+	build_height = _build_number(build_column,"高度 (m)",3,12)
+	build_capacity = Label.new()
+	build_column.add_child(build_capacity)
+	build_diameter.value_changed.connect(func(_value): _update_build_capacity())
+	build_height.value_changed.connect(func(_value): _update_build_capacity())
+	var build_note := Label.new()
+	build_note.text = "每台消耗 1 件测试设备\n建成后尺寸固定；喷嘴位于底部两侧。"
+	build_column.add_child(build_note)
+	build_apply = Button.new()
+	build_apply.text = "应用并预览"
+	build_apply.pressed.connect(func():
+		if host_view.bridge.set_tank_build_spec(int(build_diameter.value),int(build_height.value)):
+			close_requested.emit())
+	build_column.add_child(build_apply)
+	var build_cancel := Button.new()
+	build_cancel.text = "取消 · Esc"
+	build_cancel.pressed.connect(func(): close_requested.emit())
+	build_column.add_child(build_cancel)
+	build_panel.hide()
 
-func shape_mesh(host: Node3D, kind: int, axis: int, pipe_ends: Array = []) -> ArrayMesh:
-	var key := "%d:%d:%s" % [kind,axis,str(pipe_ends)]
+func _build_number(column: VBoxContainer, title: String, minimum: int, maximum: int) -> SpinBox:
+	var row := HBoxContainer.new()
+	column.add_child(row)
+	var label := Label.new()
+	label.text = title
+	label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	row.add_child(label)
+	var input := SpinBox.new()
+	input.min_value = minimum
+	input.max_value = maximum
+	input.step = 1
+	input.custom_minimum_size.x = 140
+	row.add_child(input)
+	return input
+
+func show_build(host: Node3D) -> bool:
+	var spec: Dictionary = host.bridge.tank_build_spec()
+	if spec.is_empty(): return false
+	close()
+	host_view = host
+	build_opened = true
+	build_title.text = "%s · 建造规格" % spec.name
+	build_diameter.value = spec.diameter
+	build_height.value = spec.height
+	_update_build_capacity()
+	build_panel.show()
+	return true
+
+func _update_build_capacity() -> void:
+	if is_instance_valid(host_view):
+		build_capacity.text = "有效容量  %.1f L" % (host_view.bridge.tank_build_capacity(int(build_diameter.value),int(build_height.value))*1000)
+
+func shape_mesh(host: Node3D, kind: int, axis: int, pipe_ends: Array = [], diameter: int = 2, height: int = 3) -> ArrayMesh:
+	var key := "%d:%d:%s:%d:%d" % [kind,axis,str(pipe_ends),diameter,height]
 	if not meshes.has(key):
 		var data: Dictionary = host.bridge.pipe_geometry(axis,pipe_ends[0],pipe_ends[1]) if kind == 1 and pipe_ends.size() == 2 else host.bridge.equipment_geometry(kind,axis)
+		if kind in [0,4]: data = host.bridge.tank_geometry(kind,diameter,height)
 		var mesh: ArrayMesh = host._mesh(data)
 		if mesh.get_surface_count() > 0: mesh.surface_set_material(0,metal)
 		meshes[key] = mesh
@@ -164,9 +248,9 @@ func update_view(host: Node3D) -> void:
 				node.gi_mode = GeometryInstance3D.GI_MODE_STATIC
 				add_child(node)
 				nodes[device.id] = node
-			var shape_key := "%d:%d:%s" % [device.kind,device.axis,str(device.get("pipe_ends",[]))]
+			var shape_key := "%d:%d:%s:%d:%d" % [device.kind,device.axis,str(device.get("pipe_ends",[])),device.get("diameter",2),device.get("height",3)]
 			if node.get_meta("shape","") != shape_key:
-				node.mesh = shape_mesh(host,device.kind,device.axis,device.get("pipe_ends",[]))
+				node.mesh = shape_mesh(host,device.kind,device.axis,device.get("pipe_ends",[]),device.get("diameter",2),device.get("height",3))
 				node.set_meta("shape",shape_key)
 			if node.position != Vector3(device.origin): node.position = Vector3(device.origin)
 			if device.kind == 2:
@@ -198,12 +282,13 @@ func update_view(host: Node3D) -> void:
 				feedback.text = "未确认更改，请查看状态后重试"
 			if not host.state.container_error.is_empty(): feedback.text = host.state.container_error
 			_describe(records[selected_id])
+	if build_opened and (not host.state.get("ready",false) or host.state.get("hp",0) <= 0 or host.bridge.tank_build_spec().is_empty()): close_requested.emit()
 	_update_route(host)
 	placement = host.bridge.equipment_preview(host.yaw,host.pitch) if host.captured and not opened and not route_state.get("active",false) else {}
 	preview.visible = not placement.is_empty()
 	preview_arrow.visible = preview.visible and placement.get("kind",-1) == 2
 	if preview.visible:
-		preview.mesh = shape_mesh(host,placement.kind,placement.axis)
+		preview.mesh = shape_mesh(host,placement.kind,placement.axis,[],placement.get("diameter",2),placement.get("height",3))
 		preview.position = Vector3(placement.origin)
 		preview_material.albedo_color = Color(0.4,0.85,0.55,0.32) if placement.valid else Color(0.95,0.3,0.25,0.32)
 		if preview_arrow.visible: _set_arrow(preview_arrow,placement.axis,placement.get("pump_reversed",false))
@@ -268,11 +353,13 @@ func _set_arrow(marker: MeshInstance3D, axis: int, reversed: bool) -> void:
 
 func show_device(device: Dictionary) -> void:
 	if device.is_empty(): return
+	close()
 	selected_id = device.id
 	opened = true
 	pending_revision = -1
 	pending_thermal.clear()
 	feedback.text = ""
+	assembly_display_key = ""
 	scroll_area.scroll_vertical = 0
 	_load_thermal_draft(device)
 	_describe(device)
@@ -280,6 +367,7 @@ func show_device(device: Dictionary) -> void:
 
 func _describe(device: Dictionary) -> void:
 	var lines := PackedStringArray(["%s  #%d" % [device.name,device.id], "位置  %s" % device.origin])
+	if device.kind in [0,4]: lines.append("直径 %d m · 高度 %d m · 有效容量 %.1f L" % [device.diameter,device.height,device.design_capacity_m3*1000])
 	if device.kind == 1 and device.get("pipe_ends",[]).size() == 2:
 		var faces := ["−X","+X","−Y","+Y","−Z","+Z"]
 		lines.append("接头  %s ↔ %s" % [faces[device.pipe_ends[0]],faces[device.pipe_ends[1]]])
@@ -324,6 +412,41 @@ func _describe(device: Dictionary) -> void:
 		valve_buttons[index].disabled = pending_revision >= 0 or is_equal_approx(device.opening,index*0.25)
 	thermal_apply.disabled = pending_revision >= 0
 	thermal_reload.disabled = pending_revision >= 0
+	assembly_button.visible = device.kind == 5
+	assembly_facts.visible = device.kind == 5
+	if device.kind == 5: _describe_assembly()
+
+func _check_assembly() -> void:
+	if not opened or not records.has(selected_id): return
+	var device: Dictionary = records[selected_id]
+	if device.kind != 5: return
+	assembly_started = Time.get_ticks_msec()
+	host_view.bridge.check_assembly(selected_id,device.revision,host_view.yaw,host_view.pitch)
+	_describe_assembly()
+
+func _describe_assembly() -> void:
+	var report: Dictionary = host_view.bridge.assembly_report()
+	assembly_button.disabled = report.get("pending",false) and Time.get_ticks_msec()-assembly_started < 2000
+	if report.get("pending",false):
+		assembly_facts.text = "等待结构检查…" if assembly_button.disabled else "尚未收到检查结果，可重新检查。"
+		return
+	if report.get("master_id",0) != selected_id:
+		assembly_facts.text = "模板：两侧各有独立进出罐；每条进料线有一泵一阀。\n仅检查连接与部件，设备运行不受此检查限制。"
+		return
+	var display_key := "%s:%s" % [report.request_id,report.status]
+	if display_key != assembly_display_key:
+		assembly_display_key = display_key
+		scroll_area.set_deferred("scroll_vertical",int(assembly_button.position.y))
+	var statuses := {"complete":"结构完整","incomplete":"结构不完整","stale":"结构已变化，请重新检查","rejected":"检查未执行"}
+	var lines := PackedStringArray([statuses.get(report.status,report.status),report.message])
+	for line in report.get("lines",[]):
+		var label: String = ["A 进料","A 出料","B 进料","B 出料"][line.port]
+		lines.append("%s：%s" % [label,line.message])
+		var parts := PackedStringArray()
+		for part in [["tank_id","罐"],["pump_id","泵"],["valve_id","阀"]]:
+			if line.get(part[0],0) > 0: parts.append("%s #%d" % [part[1],line[part[0]]])
+		if not parts.is_empty(): lines.append("  " + " · ".join(parts))
+	assembly_facts.text = "\n".join(lines)
 
 func _thermal_number(title: String, minimum: float, maximum: float, step: float, initial: float) -> SpinBox:
 	var row := HBoxContainer.new()
@@ -395,6 +518,9 @@ func _configure(field: String, value: Variant) -> void:
 	_describe(records[selected_id])
 
 func close() -> void:
+	build_opened = false
+	if is_instance_valid(build_panel): build_panel.hide()
+	if is_instance_valid(host_view): host_view.bridge.clear_assembly()
 	opened = false
 	selected_id = 0
 	pending_revision = -1

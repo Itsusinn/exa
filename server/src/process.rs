@@ -1,7 +1,7 @@
 //! Bounded industrial steps over immutable facts. Legacy open tanks keep their
 //! single-liquid water model; `thermal` adds sealed hydrocarbon equilibrium and
 //! coupled heat exchange. Inline devices have zero holdup (no pipe filling).
-use game_simulation::equipment::ports;
+use game_simulation::equipment::{ports, tank_area_m2, tank_capacity_m3, tank_centroid_height_m};
 use protocol::{EquipmentKind, EquipmentReading, EquipmentSnapshot, MaterialAmount, MAX_EQUIPMENT};
 use std::collections::{BTreeMap, BTreeSet};
 mod thermal;
@@ -11,12 +11,25 @@ pub const WATER_MATERIAL: &str = "icheme:water";
 pub const WATER_DENSITY_KG_M3: f64 = 1000.0;
 pub const WATER_MOLAR_MASS_KG: f64 = 0.01801528;
 pub const WATER_HEAT_CAPACITY_J_KG_K: f64 = 4180.0;
+/// Legacy 2 m by 3 m fixture dimensions; production calculations use each instance.
 pub const TANK_AREA_M2: f64 = std::f64::consts::PI * 0.9 * 0.9;
 pub const TANK_CAPACITY_M3: f64 = TANK_AREA_M2 * 2.8;
 pub const PUMP_PRESSURE_PA: f64 = 50_000.0;
 const G: f64 = 9.80665;
 const ATM: f64 = 101_325.0;
 const MAX_FLOW: f64 = 0.02;
+
+// Both free surfaces move when volume is transferred. Retain the original
+// expression for equal areas, including the legacy default geometry.
+fn water_equilibrium_volume(drive: f64, from: &EquipmentSnapshot, to: &EquipmentSnapshot) -> f64 {
+    let a = tank_area_m2(from);
+    let b = tank_area_m2(to);
+    if a == b {
+        drive.abs() * a / (2.0 * WATER_DENSITY_KG_M3 * G)
+    } else {
+        drive.abs() / (WATER_DENSITY_KG_M3 * G * (1.0 / a + 1.0 / b))
+    }
+}
 
 pub struct FlowStep {
     pub devices: Vec<EquipmentSnapshot>,
@@ -47,10 +60,10 @@ fn potential(device: &EquipmentSnapshot) -> f64 {
                     .map_or(0.0, |i| c.moles * crate::thermo::MOLAR_MASS_KG[i])
             })
             .sum();
-        return mass * G * (f64::from(device.origin[1]) + 1.4);
+        return mass * G * (f64::from(device.origin[1]) + tank_centroid_height_m(device));
     }
     let v = volume(device);
-    WATER_DENSITY_KG_M3 * v * G * (f64::from(device.origin[1]) + v / (2.0 * TANK_AREA_M2))
+    WATER_DENSITY_KG_M3 * v * G * (f64::from(device.origin[1]) + v / (2.0 * tank_area_m2(device)))
 }
 pub fn stored_energy_j(device: &EquipmentSnapshot) -> f64 {
     device.internal_energy_j + potential(device)
@@ -67,7 +80,7 @@ fn validate(device: &EquipmentSnapshot) -> Result<(), String> {
     {
         return Err("inline inventory unsupported; existing contents preserved".into());
     }
-    if volume(device) > TANK_CAPACITY_M3 + 1e-10 || device.internal_energy_j < 0.0 {
+    if volume(device) > tank_capacity_m3(device) + 1e-10 || device.internal_energy_j < 0.0 {
         return Err("water capacity or energy outside model".into());
     }
     let mass = water_moles(device) * WATER_MOLAR_MASS_KG;
@@ -89,7 +102,9 @@ pub fn fill_water(
         || liters <= 0.0
         || !temp_k.is_finite()
         || !(273.15..=373.15).contains(&temp_k)
-        || volume(device) + liters / 1000.0 > TANK_CAPACITY_M3
+        // Match validation's volume tolerance: L -> m3 roundoff must not reject
+        // an exactly full parameterized tank. Never discard the supplied mass.
+        || volume(device) + liters / 1000.0 > tank_capacity_m3(device) + 1e-10
     {
         return Err("invalid water amount, temperature or tank capacity".into());
     }
@@ -229,7 +244,7 @@ fn solve_water(input: &[EquipmentSnapshot], dt_s: f64) -> Result<FlowStep, Strin
             }
             continue;
         }
-        let surface = |d: &EquipmentSnapshot| f64::from(d.origin[1]) + volume(d) / TANK_AREA_M2;
+        let surface = |d: &EquipmentSnapshot| f64::from(d.origin[1]) + volume(d) / tank_area_m2(d);
         let drive =
             WATER_DENSITY_KG_M3 * G * (surface(&devices[path.a]) - surface(&devices[path.b]))
                 + head;
@@ -243,10 +258,10 @@ fn solve_water(input: &[EquipmentSnapshot], dt_s: f64) -> Result<FlowStep, Strin
             (path.b, path.a)
         };
         // A liquid nozzle at 0.5 m cannot draw the heel beneath it.
-        let available = (volume(&devices[from]) - TANK_AREA_M2 * 0.5).max(0.0);
-        let capacity = (TANK_CAPACITY_M3 - volume(&devices[to])).max(0.0);
+        let available = (volume(&devices[from]) - tank_area_m2(&devices[from]) * 0.5).max(0.0);
+        let capacity = (tank_capacity_m3(&devices[to]) - volume(&devices[to])).max(0.0);
         // Do not cross the hydrostatic equilibrium in a finite explicit step.
-        let equilibrium = drive.abs() * TANK_AREA_M2 / (2.0 * WATER_DENSITY_KG_M3 * G);
+        let equilibrium = water_equilibrium_volume(drive, &devices[from], &devices[to]);
         let dv = (q.abs() * dt_s)
             .min(available)
             .min(capacity)
@@ -285,11 +300,12 @@ fn solve_water(input: &[EquipmentSnapshot], dt_s: f64) -> Result<FlowStep, Strin
         d.reading = Some(EquipmentReading {
             temperature_k: (mass > 0.0)
                 .then(|| 273.15 + d.internal_energy_j / (mass * WATER_HEAT_CAPACITY_J_KG_K)),
-            pressure_pa: (d.kind == EquipmentKind::Tank)
-                .then(|| ATM + WATER_DENSITY_KG_M3 * G * (volume(d) / TANK_AREA_M2 - 0.5).max(0.0)),
+            pressure_pa: (d.kind == EquipmentKind::Tank).then(|| {
+                ATM + WATER_DENSITY_KG_M3 * G * (volume(d) / tank_area_m2(d) - 0.5).max(0.0)
+            }),
             volume_m3: volume(d),
             capacity_m3: if d.kind == EquipmentKind::Tank {
-                TANK_CAPACITY_M3
+                tank_capacity_m3(d)
             } else {
                 0.0
             },
@@ -336,6 +352,7 @@ mod tests {
             opening: 1.0,
             pump_reversed: false,
             pipe_ends: None,
+            tank_size: None,
             thermal: None,
             reading: None,
         }
@@ -365,6 +382,79 @@ mod tests {
     }
     fn amount(ds: &[EquipmentSnapshot]) -> f64 {
         ds.iter().map(water_moles).sum()
+    }
+    #[test]
+    fn differently_sized_water_tanks_follow_levels_and_conserve_energy() {
+        let mut ds = vec![
+            device(1, EquipmentKind::Tank, 0),
+            device(2, EquipmentKind::Pipe, 4),
+            device(3, EquipmentKind::Tank, 5),
+        ];
+        ds[0].tank_size = Some(protocol::TankSize {
+            diameter: 4,
+            height: 8,
+        });
+        // D4 nozzles use local z=1.5; align them with the narrow line at z=0.5.
+        ds[0].origin[2] = -1;
+        assert!(game_simulation::equipment::connected(
+            ports(&ds[0])[1],
+            ports(&ds[1])[0]
+        ));
+        assert!(game_simulation::equipment::connected(
+            ports(&ds[1])[1],
+            ports(&ds[2])[0]
+        ));
+        let a = tank_area_m2(&ds[0]);
+        let b = tank_area_m2(&ds[2]);
+        fill_water(&mut ds[0], a * 1500.0, 300.0).unwrap();
+        fill_water(&mut ds[2], b * 1500.0, 300.0).unwrap();
+        let balanced = solve(&ds, 0.2).unwrap();
+        assert!((water_moles(&balanced.devices[0]) - water_moles(&ds[0])).abs() < 1e-8);
+        // A much larger amount in the wide tank is not a pressure difference.
+        assert!(water_moles(&ds[0]) > water_moles(&ds[2]) * 4.0);
+        fill_water(&mut ds[0], 1000.0, 300.0).unwrap();
+        let initial_n = amount(&ds);
+        let initial_e = energy(&ds);
+        let source_n = water_moles(&ds[0]);
+        for _ in 0..200 {
+            ds = solve(&ds, 0.2).unwrap().devices;
+            assert!(volume(&ds[0]) / a >= volume(&ds[2]) / b - 1e-12);
+        }
+        assert!(water_moles(&ds[0]) < source_n);
+        assert!((amount(&ds) - initial_n).abs() < initial_n * 1e-12);
+        assert!((energy(&ds) - initial_e).abs() < initial_e * 1e-12);
+        assert_eq!(
+            ds[0].reading.as_ref().unwrap().capacity_m3,
+            tank_capacity_m3(&ds[0])
+        );
+        let mut full = device(4, EquipmentKind::Tank, 10);
+        full.tank_size = ds[0].tank_size;
+        let liters = tank_capacity_m3(&full) * 1000.0;
+        fill_water(&mut full, liters, 300.0).unwrap();
+        let before = full.clone();
+        assert!(fill_water(&mut full, 1.0, 300.0).is_err());
+        assert_eq!(full, before);
+    }
+
+    #[test]
+    fn explicit_default_tanks_keep_legacy_water_results() {
+        let ds = circuit(true);
+        let mut explicit = ds.clone();
+        for d in &mut explicit {
+            if d.kind == EquipmentKind::Tank {
+                d.tank_size = Some(protocol::TankSize {
+                    diameter: 2,
+                    height: 3,
+                });
+            }
+        }
+        let legacy = solve(&ds, 0.2).unwrap();
+        let mut sized = solve(&explicit, 0.2).unwrap();
+        for d in &mut sized.devices {
+            d.tank_size = None;
+        }
+        assert_eq!(legacy.devices, sized.devices);
+        assert_eq!(legacy.pump_work_j, sized.pump_work_j);
     }
     #[test]
     fn pumped_reverse_gradient_conserves_mass_and_total_energy() {

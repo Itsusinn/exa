@@ -8,11 +8,14 @@ pub fn charge(
     amounts: [f64; 2],
     temperature: f64,
 ) -> Result<f64, String> {
-    if device.kind != EquipmentKind::Vessel || !device.is_empty() || device.internal_energy_j != 0.0
+    if !device.valid()
+        || device.kind != EquipmentKind::Vessel
+        || !device.is_empty()
+        || device.internal_energy_j != 0.0
     {
         return Err("charge requires an empty sealed vessel".into());
     }
-    let state = thermo::tv(temperature, TANK_CAPACITY_M3, amounts)?;
+    let state = thermo::tv(temperature, tank_capacity_m3(device), amounts)?;
     let mut next = device.clone();
     next.contents = thermo::materials_from_amounts(amounts);
     next.internal_energy_j = state.internal_energy_j;
@@ -25,7 +28,8 @@ pub fn charge(
     Ok(energy)
 }
 pub fn heat(device: &mut EquipmentSnapshot, joules: f64) -> Result<(), String> {
-    if device.kind != EquipmentKind::Vessel
+    if !device.valid()
+        || device.kind != EquipmentKind::Vessel
         || device.is_empty()
         || !joules.is_finite()
         || joules.abs() > 1e15
@@ -35,7 +39,7 @@ pub fn heat(device: &mut EquipmentSnapshot, joules: f64) -> Result<(), String> {
     let u = device.internal_energy_j + joules;
     thermo::uv(
         u,
-        TANK_CAPACITY_M3,
+        tank_capacity_m3(device),
         thermo::amounts_from_materials(&device.contents)?,
     )?;
     device.internal_energy_j = u;
@@ -199,7 +203,7 @@ fn state(d: &EquipmentSnapshot) -> Result<Option<State>, String> {
                 temperature: 273.15
                     + d.internal_energy_j
                         / (water_moles(d) * WATER_MOLAR_MASS_KG * WATER_HEAT_CAPACITY_J_KG_K),
-                pressure: ATM + WATER_DENSITY_KG_M3 * G * (v / TANK_AREA_M2 - 0.5).max(0.0),
+                pressure: ATM + WATER_DENSITY_KG_M3 * G * (v / tank_area_m2(d) - 0.5).max(0.0),
                 volume: v,
                 hydro: None,
             }))
@@ -213,7 +217,7 @@ fn state(d: &EquipmentSnapshot) -> Result<Option<State>, String> {
             }
             let s = thermo::uv(
                 d.internal_energy_j,
-                TANK_CAPACITY_M3,
+                tank_capacity_m3(d),
                 thermo::amounts_from_materials(&d.contents)?,
             )?;
             let liquid_volume = s.liquid.as_ref().map_or(0.0, |phase| {
@@ -404,7 +408,7 @@ fn plan(
         pressure(i)
             + if ds[i].kind == EquipmentKind::Vessel {
                 states[i].as_ref().map_or(0.0, |s| {
-                    density(i) * G * (s.volume / TANK_AREA_M2 - 0.5).max(0.0)
+                    density(i) * G * (s.volume / tank_area_m2(&ds[i]) - 0.5).max(0.0)
                 })
             } else {
                 0.0
@@ -443,12 +447,12 @@ fn plan(
             dn * phase.molar_enthalpy_j,
         )
     } else {
-        let available = (s.volume - TANK_AREA_M2 * 0.5).max(0.0);
-        let capacity = TANK_CAPACITY_M3 - states[to].as_ref().map_or(0.0, |s| s.volume);
+        let available = (s.volume - tank_area_m2(&ds[from]) * 0.5).max(0.0);
+        let capacity = tank_capacity_m3(&ds[to]) - states[to].as_ref().map_or(0.0, |s| s.volume);
         dv = dv
             .min(available * 0.01)
             .min(capacity)
-            .min(drive.abs() * TANK_AREA_M2 / (2.0 * WATER_DENSITY_KG_M3 * G));
+            .min(water_equilibrium_volume(drive, &ds[from], &ds[to]));
         let dn = dv * WATER_DENSITY_KG_M3 / WATER_MOLAR_MASS_KG;
         (
             [0.0; 2],
@@ -701,7 +705,11 @@ fn attempt(
             temperature_k: s.as_ref().map(|s| s.temperature),
             pressure_pa: s.as_ref().map(|s| s.pressure),
             volume_m3: s.as_ref().map_or(0.0, |s| s.volume),
-            capacity_m3: if reservoir(d) { TANK_CAPACITY_M3 } else { 0.0 },
+            capacity_m3: if reservoir(d) {
+                tank_capacity_m3(d)
+            } else {
+                0.0
+            },
             flow_m3_s: rates[i],
             status: if rates[i] == 0.0 { "idle" } else { "flowing" }.into(),
             thermal,
@@ -731,6 +739,7 @@ mod tests {
             opening: 1.0,
             pump_reversed: false,
             pipe_ends: None,
+            tank_size: None,
             thermal: (kind == EquipmentKind::HeatExchanger)
                 .then(protocol::ThermalSettings::default),
             reading: None,
@@ -755,6 +764,77 @@ mod tests {
         }
         ds[3].thermal.as_mut().unwrap().mode = HeatControlMode::Manual;
         ds
+    }
+    #[test]
+    fn sized_sealed_vessel_uses_its_volume_and_centroid() {
+        let mut small = device(1, EquipmentKind::Vessel, [0, 10, 0]);
+        let mut large = device(2, EquipmentKind::Vessel, [5, 10, 0]);
+        large.tank_size = Some(protocol::TankSize {
+            diameter: 4,
+            height: 8,
+        });
+        let ratio = tank_capacity_m3(&large) / tank_capacity_m3(&small);
+        charge(&mut small, [1000.0, 1000.0], 320.0).unwrap();
+        let external = charge(&mut large, [1000.0 * ratio; 2], 320.0).unwrap();
+        let a = state(&small).unwrap().unwrap();
+        let b = state(&large).unwrap().unwrap();
+        assert!((a.temperature - b.temperature).abs() < 1e-5);
+        assert!((a.pressure - b.pressure).abs() < 1.0);
+        assert!((large.internal_energy_j / ratio - small.internal_energy_j).abs() < 1.0);
+        let mass: f64 = [1000.0 * ratio; 2]
+            .into_iter()
+            .zip(thermo::MOLAR_MASS_KG)
+            .map(|(n, m)| n * m)
+            .sum();
+        assert!((external - large.internal_energy_j - mass * G * (10.0 + 3.9)).abs() < 1e-6);
+        heat(&mut large, 1000.0).unwrap();
+        let result = solve(&[large.clone()], 0.2).unwrap();
+        assert_eq!(result.devices[0].contents, large.contents);
+        assert_eq!(result.devices[0].internal_energy_j, large.internal_energy_j);
+        assert_eq!(
+            result.devices[0].reading.as_ref().unwrap().capacity_m3,
+            tank_capacity_m3(&large)
+        );
+    }
+    #[test]
+    fn coupled_water_transport_respects_different_tank_areas() {
+        let mut ds = vec![
+            device(1, EquipmentKind::Tank, [0, 10, 0]),
+            device(2, EquipmentKind::Pipe, [4, 10, 0]),
+            device(3, EquipmentKind::Tank, [5, 10, 0]),
+        ];
+        ds[0].tank_size = Some(protocol::TankSize {
+            diameter: 4,
+            height: 8,
+        });
+        // D4 nozzles use local z=1.5; align them with the narrow line at z=0.5.
+        ds[0].origin[2] = -1;
+        assert!(game_simulation::equipment::connected(
+            ports(&ds[0])[1],
+            ports(&ds[1])[0]
+        ));
+        assert!(game_simulation::equipment::connected(
+            ports(&ds[1])[1],
+            ports(&ds[2])[0]
+        ));
+        let a = tank_area_m2(&ds[0]);
+        let b = tank_area_m2(&ds[2]);
+        fill_water(&mut ds[0], a * 2000.0, 300.0).unwrap();
+        fill_water(&mut ds[2], b * 1000.0, 300.0).unwrap();
+        let before = ds.clone();
+        for _ in 0..20 {
+            ds = solve_coupled(&ds, 0.2).unwrap().devices;
+        }
+        audit(
+            &before,
+            &FlowStep {
+                devices: ds.clone(),
+                pump_work_j: 0.0,
+            },
+        )
+        .unwrap();
+        assert!(water_moles(&ds[0]) < water_moles(&before[0]));
+        assert!(volume(&ds[0]) / a > volume(&ds[2]) / b);
     }
     #[test]
     fn bent_three_dimensional_heat_route_uses_world_elevation_and_conserves_energy() {

@@ -1,7 +1,7 @@
 //! Authoritative equipment transactions and atomic publication of background fluid results.
 use super::*;
 use game_simulation::{
-    equipment::{collision_boxes, occupied_cells, placement_origin, target},
+    equipment::{collision_boxes, occupied_cells, placement_origin_sized, target},
     inventory::insert,
     HEIGHT, RADIUS,
 };
@@ -36,6 +36,17 @@ impl VoxelWorld {
     }
 
     pub fn equipment_command(&mut self, player: u32, command: EquipmentCommand) {
+        if let EquipmentCommand::CheckAssembly {
+            request_id,
+            id,
+            revision,
+            yaw,
+            pitch,
+        } = command
+        {
+            self.check_assembly(player, request_id, id, revision, yaw, pitch);
+            return;
+        }
         if matches!(
             command,
             EquipmentCommand::BeginPipe { .. }
@@ -96,6 +107,7 @@ impl VoxelWorld {
                 pitch,
                 kind,
                 axis,
+                tank_size,
                 inventory_revision,
                 slot,
             } => {
@@ -121,7 +133,7 @@ impl VoxelWorld {
                     hit.position == expected && hit.normal != [0; 3],
                     "目标已变化，请重新瞄准。"
                 );
-                let origin = placement_origin(hit, kind);
+                let origin = placement_origin_sized(hit, kind, tank_size);
                 let equipment = EquipmentSnapshot {
                     id: next_id,
                     revision,
@@ -134,6 +146,7 @@ impl VoxelWorld {
                     opening: 1.0,
                     pump_reversed: false,
                     pipe_ends: None,
+                    tank_size,
                     thermal: (kind == EquipmentKind::HeatExchanger)
                         .then(protocol::ThermalSettings::default),
                     reading: None,
@@ -217,7 +230,8 @@ impl VoxelWorld {
             }
             EquipmentCommand::BeginPipe { .. }
             | EquipmentCommand::LayPipe { .. }
-            | EquipmentCommand::CancelPipe { .. } => unreachable!(),
+            | EquipmentCommand::CancelPipe { .. }
+            | EquipmentCommand::CheckAssembly { .. } => unreachable!(),
         };
         bag.revision = inventory::next_revision(bag.revision)?;
         // One authority transaction: a failure above changes neither inventory nor world facts.
@@ -473,6 +487,7 @@ impl VoxelWorld {
                     || device.origin != old.origin
                     || device.axis != old.axis
                     || device.pipe_ends != old.pipe_ends
+                    || device.tank_size != old.tank_size
                     || device.enabled != old.enabled
                     || device.opening != old.opening
                     || device.pump_reversed != old.pump_reversed
@@ -599,6 +614,7 @@ impl VoxelWorld {
     }
 
     pub(super) fn broadcast_equipment(&mut self) {
+        self.broadcast_assembly_reports();
         self.expire_pipe_starts();
         let mut slow = Vec::new();
         for (&id, p) in &mut self.players {
@@ -667,6 +683,8 @@ impl VoxelWorld {
             crate::industry_data::read_v2(&archive_path)?
         } else if version == 10 {
             crate::industry_data::read_v3(&archive_path)?
+        } else if version == 11 {
+            crate::industry_data::read_v4(&archive_path)?
         } else {
             crate::industry_data::read(&archive_path)?
         };
@@ -748,11 +766,80 @@ mod tests {
                 pitch,
                 kind: EquipmentKind::Tank,
                 axis: 0,
+                tank_size: None,
                 inventory_revision: w.players[&1].inventory.revision,
                 slot: 0,
             },
         )
         .unwrap();
+    }
+    #[test]
+    fn sized_tank_build_is_atomic_costs_one_and_round_trips() {
+        let (mut w, _rx) = world();
+        w.players.get_mut(&1).unwrap().body.position = [-0.5, 81.0, 13.0];
+        let (yaw, pitch) = aim(&w, [-0.5, 81.0, 15.5]);
+        let bag = w.players[&1].inventory.clone();
+        let command = |size| EquipmentCommand::Place {
+            target: [-1, 80, 15],
+            yaw,
+            pitch,
+            kind: EquipmentKind::Tank,
+            axis: 0,
+            tank_size: Some(size),
+            inventory_revision: bag.revision,
+            slot: 0,
+        };
+        let size = protocol::TankSize {
+            diameter: 6,
+            height: 12,
+        };
+        assert!(w
+            .apply_equipment_command(
+                1,
+                command(protocol::TankSize {
+                    diameter: 7,
+                    height: 12
+                })
+            )
+            .is_err());
+        // Obstruction is in the expanded footprint, beyond the old 2x3x2 tank.
+        w.terrain.set([4, 91, 20], STONE);
+        assert!(w.apply_equipment_command(1, command(size)).is_err());
+        assert_eq!(w.players[&1].inventory, bag);
+        assert_eq!(w.next_equipment_id, 1);
+        assert!(w.terrain.equipment.is_empty());
+        w.terrain.set([4, 91, 20], AIR);
+        w.apply_equipment_command(1, command(size)).unwrap();
+        assert_eq!(w.terrain.equipment[&1].tank_size, Some(size));
+        assert_eq!(
+            w.players[&1].inventory.slots[0].as_ref().unwrap().quantity,
+            1
+        );
+        crate::process::fill_water(w.terrain.equipment.get_mut(&1).unwrap(), 20_000.0, 300.0)
+            .unwrap();
+        let before = w.terrain.equipment.clone();
+        let dir = directory();
+        let path = dir.path().join("world3d.bin");
+        w.save(&path).unwrap();
+        assert_eq!(VoxelWorld::load(&path).unwrap().terrain.equipment, before);
+        let (revision, mut ds) = w.industry_input().unwrap();
+        ds[0].tank_size = Some(protocol::TankSize {
+            diameter: 5,
+            height: 12,
+        });
+        assert!(w.apply_industry_result(
+            revision,
+            Ok(crate::process::FlowStep {
+                devices: ds,
+                pump_work_j: 0.0
+            })
+        ));
+        assert_eq!(w.terrain.equipment[&1].tank_size, Some(size));
+        assert_eq!(w.terrain.equipment[&1].contents, before[&1].contents);
+        assert_eq!(
+            w.terrain.equipment[&1].internal_energy_j,
+            before[&1].internal_energy_j
+        );
     }
     fn remove(w: &VoxelWorld, id: u64) -> EquipmentCommand {
         let e = &w.terrain.equipment[&id];
@@ -866,7 +953,7 @@ mod tests {
         );
         restored.save(&path).unwrap();
         let current: Save = rmp_serde::from_slice(&std::fs::read(&path).unwrap()[8..]).unwrap();
-        assert_eq!(current.version, 11);
+        assert_eq!(current.version, 12);
         assert_eq!(VoxelWorld::load(&path).unwrap().terrain.equipment, expected);
     }
 
@@ -965,7 +1052,78 @@ mod tests {
         }
         restored.save(&path).unwrap();
         let final_save: Save = rmp_serde::from_slice(&std::fs::read(&path).unwrap()[8..]).unwrap();
-        assert_eq!(final_save.version, 11);
+        assert_eq!(final_save.version, 12);
+        assert_eq!(VoxelWorld::load(&path).unwrap().industry_ledger, ledger);
+    }
+
+    #[test]
+    fn version_eleven_migration_preserves_thermal_facts_and_all_archive_backups() {
+        let (mut w, _) = world();
+        place_tank(&mut w);
+        crate::process::fill_water(w.terrain.equipment.get_mut(&1).unwrap(), 2000.0, 300.0)
+            .unwrap();
+        let mut vessel = w.terrain.equipment[&1].clone();
+        vessel.id = 2;
+        vessel.origin = [4, 81, 15];
+        vessel.kind = EquipmentKind::Vessel;
+        vessel.contents.clear();
+        vessel.internal_energy_j = 0.0;
+        let energy = crate::process::charge(&mut vessel, [1000.0, 1000.0], 320.0).unwrap();
+        w.terrain.equipment.insert(2, vessel);
+        let mut pipe = w.terrain.equipment[&1].clone();
+        pipe.id = 3;
+        pipe.kind = EquipmentKind::Pipe;
+        pipe.origin = [10, 81, 15];
+        pipe.contents.clear();
+        pipe.internal_energy_j = 0.0;
+        pipe.pipe_ends = Some([0, 4]);
+        let mut rack = pipe.clone();
+        rack.id = 4;
+        rack.kind = EquipmentKind::PipeRack;
+        rack.pipe_ends = None;
+        w.terrain.equipment.insert(3, pipe);
+        w.terrain.equipment.insert(4, rack);
+        w.next_equipment_id = 5;
+        w.industry_ledger.hydro_injected_moles = [1000.0, 1000.0];
+        w.industry_ledger.hydro_injected_energy_j = energy;
+        w.industry_ledger.heat_added_j = 123.0;
+        let expected = w.terrain.equipment.clone();
+        let ledger = w.industry_ledger.clone();
+        let dir = directory();
+        let path = dir.path().join("world3d.bin");
+        w.save(&path).unwrap();
+        let mut saved: Save = rmp_serde::from_slice(&std::fs::read(&path).unwrap()[8..]).unwrap();
+        saved.version = 11;
+        let ip = path
+            .with_extension("industry")
+            .join(format!("{}.rkyv", saved.industry_archive.as_ref().unwrap()));
+        let archive = crate::industry_data::read(&ip).unwrap();
+        std::fs::remove_file(&ip).unwrap();
+        crate::industry_data::write_v4_fixture(&ip, &archive).unwrap();
+        let mut bytes = b"DNG3D001".to_vec();
+        bytes.extend(rmp_serde::to_vec(&saved).unwrap());
+        std::fs::write(&path, &bytes).unwrap();
+        let restored = VoxelWorld::load(&path).unwrap();
+        assert_eq!(restored.terrain.equipment, expected);
+        assert_eq!(restored.industry_ledger, ledger);
+        assert_eq!(
+            std::fs::read(path.with_extension("v11.bak")).unwrap(),
+            bytes
+        );
+        for extension in ["chunks", "players", "entities", "industry"] {
+            let original = path.with_extension(extension);
+            let backup = dir.path().join(format!("world3d.v11.bak.{extension}"));
+            for entry in std::fs::read_dir(original).unwrap() {
+                let entry = entry.unwrap();
+                assert_eq!(
+                    std::fs::read(entry.path()).unwrap(),
+                    std::fs::read(backup.join(entry.file_name())).unwrap()
+                );
+            }
+        }
+        restored.save(&path).unwrap();
+        let final_save: Save = rmp_serde::from_slice(&std::fs::read(&path).unwrap()[8..]).unwrap();
+        assert_eq!(final_save.version, 12);
         assert_eq!(VoxelWorld::load(&path).unwrap().industry_ledger, ledger);
     }
 
@@ -989,6 +1147,29 @@ mod tests {
         assert!(VoxelWorld::load(&path).is_err());
         assert_eq!(std::fs::read(&path).unwrap(), manifest_bytes);
         assert_eq!(std::fs::read(&ip).unwrap(), archived_bytes);
+    }
+
+    #[test]
+    fn malformed_saved_tank_size_refuses_load_without_rewriting_archives() {
+        let (mut w, _rx) = world();
+        place_tank(&mut w);
+        let dir = directory();
+        let path = dir.path().join("world3d.bin");
+        w.save(&path).unwrap();
+        let manifest_bytes = std::fs::read(&path).unwrap();
+        let manifest: Save = rmp_serde::from_slice(&manifest_bytes[8..]).unwrap();
+        let ip = path
+            .with_extension("industry")
+            .join(format!("{}.rkyv", manifest.industry_archive.unwrap()));
+        let mut archive = crate::industry_data::read(&ip).unwrap();
+        archive.equipment[0].tank_size = Some([1, 12]);
+        std::fs::remove_file(&ip).unwrap();
+        crate::industry_data::write_new(&ip, &archive).unwrap();
+        let malformed = std::fs::read(&ip).unwrap();
+        assert!(VoxelWorld::load(&path).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), manifest_bytes);
+        assert_eq!(std::fs::read(&ip).unwrap(), malformed);
+        assert!(!path.with_extension("v11.bak").exists());
     }
 
     #[test]
@@ -1172,6 +1353,7 @@ mod tests {
                 pitch,
                 kind: EquipmentKind::Pipe,
                 axis,
+                tank_size: None,
                 inventory_revision: revision,
                 slot: 1,
             };
@@ -1227,6 +1409,7 @@ mod tests {
                     pitch,
                     kind: EquipmentKind::Tank,
                     axis: 0,
+                    tank_size: None,
                     inventory_revision: bag.revision,
                     slot: 0
                 }

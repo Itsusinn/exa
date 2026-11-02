@@ -24,6 +24,11 @@ pub struct Session {
     pub demo: bool,
     pub generation: u64,
     pub equipment_axis: u8,
+    pub tank_size: TankSize,
+    pub assembly_report: Option<AssemblyReport>,
+    pub assembly_pending: bool,
+    assembly_request: u64,
+    assembly_master: Option<u64>,
     pub pipe_mode: bool,
     pub pipe_start: Option<PipeAnchor>,
     pub pipe_target: Option<PipeAnchor>,
@@ -50,6 +55,11 @@ impl Default for Session {
             demo: false,
             generation: 0,
             equipment_axis: 0,
+            tank_size: TankSize::default(),
+            assembly_report: None,
+            assembly_pending: false,
+            assembly_request: 0,
+            assembly_master: None,
             pipe_mode: false,
             pipe_start: None,
             pipe_target: None,
@@ -130,6 +140,9 @@ impl Session {
         self.model = Client3d::default();
         self.demo = false;
         self.equipment_axis = 0;
+        self.tank_size = TankSize::default();
+        self.clear_assembly();
+        self.assembly_request = 0;
         self.clear_pipe_route();
         self.pipe_request = 0;
         self.generation += 1;
@@ -200,6 +213,7 @@ impl Session {
             self.model.equipment_revision += 1;
             self.generation += 1;
             self.clear_pipe_route();
+            self.clear_assembly();
             if let Some(server) = &mut self.local_server {
                 self.local_error = true;
                 server.stop();
@@ -207,6 +221,57 @@ impl Session {
         }
         if let Some(reply) = self.model.pipe_reply.take() {
             self.accept_pipe_reply(reply);
+        }
+        if let Some(reply) = self.model.assembly_reply.take() {
+            self.accept_assembly_reply(reply);
+        }
+    }
+    pub fn clear_assembly(&mut self) {
+        self.assembly_master = None;
+        self.assembly_report = None;
+        self.assembly_pending = false;
+        self.model.assembly_reply = None;
+    }
+
+    fn accept_assembly_reply(&mut self, reply: AssemblyReport) {
+        if self.assembly_master == Some(reply.master_id)
+            && reply.request_id == self.assembly_request
+            && reply.valid()
+        {
+            self.assembly_pending = false;
+            self.assembly_report = Some(reply);
+        }
+    }
+
+    pub fn check_assembly(&mut self, id: u64, revision: u64, yaw: f32, pitch: f32) {
+        if !self.model.ready || self.demo {
+            return;
+        }
+        let Some(request_id) = self
+            .assembly_request
+            .checked_add(1)
+            .filter(|id| *id <= i64::MAX as u64)
+        else {
+            self.model.container_error = "结构检查请求编号已用尽，请重连。".into();
+            return;
+        };
+        let Some(transport) = &self.transport else {
+            return;
+        };
+        match transport.send(ClientMessage::Equipment(EquipmentCommand::CheckAssembly {
+            request_id,
+            id,
+            revision,
+            yaw,
+            pitch,
+        })) {
+            Ok(()) => {
+                self.assembly_request = request_id;
+                self.assembly_master = Some(id);
+                self.assembly_report = None;
+                self.assembly_pending = true;
+            }
+            Err(error) => self.model.container_error = error,
         }
     }
     fn clear_pipe_route(&mut self) {
@@ -496,6 +561,8 @@ impl Session {
                         yaw,
                         pitch,
                         kind,
+                        tank_size: matches!(kind, EquipmentKind::Tank | EquipmentKind::Vessel)
+                            .then_some(self.tank_size),
                         axis: if kind == EquipmentKind::PipeRack {
                             if self.equipment_axis == 2 {
                                 2
@@ -603,7 +670,9 @@ impl Session {
             id: 1,
             revision: 0,
             kind,
-            origin: equipment::placement_origin(hit, kind),
+            tank_size: matches!(kind, EquipmentKind::Tank | EquipmentKind::Vessel)
+                .then_some(self.tank_size),
+            origin: equipment::placement_origin_sized(hit, kind, Some(self.tank_size)),
             axis: if kind == EquipmentKind::PipeRack {
                 if self.equipment_axis == 2 {
                     2
@@ -766,6 +835,43 @@ impl Session {
 #[cfg(test)]
 mod pipe_tests {
     use super::*;
+
+    #[test]
+    fn assembly_replies_ignore_closed_panels_old_requests_and_other_masters() {
+        let report = |request_id, master_id, status| AssemblyReport {
+            request_id,
+            master_id,
+            status,
+            lines: vec![],
+            message: "check".into(),
+        };
+        let mut session = Session {
+            assembly_master: Some(3),
+            assembly_request: 4,
+            assembly_pending: true,
+            ..Default::default()
+        };
+        session.accept_assembly_reply(report(3, 3, AssemblyStatus::Rejected));
+        session.accept_assembly_reply(report(4, 2, AssemblyStatus::Rejected));
+        assert!(session.assembly_report.is_none() && session.assembly_pending);
+        session.accept_assembly_reply(report(4, 3, AssemblyStatus::Rejected));
+        assert!(!session.assembly_pending);
+        session.accept_assembly_reply(report(4, 3, AssemblyStatus::Stale));
+        assert_eq!(
+            session.assembly_report.as_ref().unwrap().status,
+            AssemblyStatus::Stale
+        );
+        session.clear_assembly();
+        session.accept_assembly_reply(report(4, 3, AssemblyStatus::Stale));
+        assert!(session.assembly_report.is_none());
+        session.tank_size = TankSize {
+            diameter: 6,
+            height: 12,
+        };
+        session.disconnect();
+        assert_eq!(session.tank_size, TankSize::default());
+        assert_eq!(session.assembly_request, 0);
+    }
     struct Queue {
         fail: bool,
     }

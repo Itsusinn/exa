@@ -1,4 +1,5 @@
 mod archive_io;
+pub mod assembly;
 pub mod chunk_data;
 pub mod entity_data;
 pub mod industry_data;

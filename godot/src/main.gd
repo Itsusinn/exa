@@ -273,7 +273,7 @@ func _focus_gained() -> void:
 func _sync_mouse_capture() -> void:
 	var owner := get_viewport().gui_get_focus_owner()
 	var ui_focused := owner != null and owner.is_visible_in_tree()
-	var should_capture: bool = focused and state.get("ready",false) and pending_action.is_empty() and not entering_game and not hud.menu.visible and not hud.inventory_open and not hud.container_wanted and not hud.container_open and not industry.opened and not ui_focused
+	var should_capture: bool = focused and state.get("ready",false) and pending_action.is_empty() and not entering_game and not hud.menu.visible and not hud.inventory_open and not hud.container_wanted and not hud.container_open and not industry.opened and not industry.build_opened and not ui_focused
 	if should_capture and not captured:
 		captured = true
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
@@ -296,6 +296,7 @@ func _close_inventory() -> void:
 	_sync_mouse_capture()
 
 func _select_hotbar(slot: int) -> void:
+	_close_equipment()
 	bridge.cancel_pipe_route()
 	hotbar_cursor = posmod(slot,9)
 	bridge.select_hotbar(hotbar_cursor)
@@ -330,7 +331,7 @@ func _input(event: InputEvent) -> void:
 				industry.route_state.clear()
 				get_viewport().set_input_as_handled()
 				return
-			if industry.opened:
+			if industry.opened or industry.build_opened:
 				_close_equipment()
 				get_viewport().set_input_as_handled()
 				return
@@ -353,6 +354,12 @@ func _input(event: InputEvent) -> void:
 					hud.menu.in_game = true
 					hud.menu.show_page("pause")
 			get_viewport().set_input_as_handled()
+		elif event.keycode == KEY_B and captured and focused and state.get("ready",false) and not hud.menu.visible and not hud.inventory_open:
+			if industry.show_build(self):
+				bridge.cancel_pipe_route()
+				_release_mouse()
+			get_viewport().set_input_as_handled()
+			return
 		elif event.keycode == KEY_P and captured and focused and state.get("ready",false) and not hud.menu.visible and not hud.inventory_open:
 			bridge.toggle_pipe_mode()
 			industry.route_state = bridge.pipe_route_state(yaw,pitch)
@@ -413,7 +420,7 @@ func _unhandled_input(event: InputEvent) -> void:
 func _process(delta: float) -> void:
 	_sync_mouse_capture()
 	var controls := {"yaw": yaw, "pitch": pitch}
-	if captured and focused and not hud.inventory_open and not hud.menu.visible and not hud.container_wanted and not hud.container_open and not industry.opened:
+	if captured and focused and not hud.inventory_open and not hud.menu.visible and not hud.container_wanted and not hud.container_open and not industry.opened and not industry.build_opened:
 		controls.forward = Input.get_action_strength("forward") - Input.get_action_strength("back")
 		controls.strafe = Input.get_action_strength("right") - Input.get_action_strength("left")
 		controls.jump = Input.is_action_pressed("jump")
@@ -484,7 +491,7 @@ func _process(delta: float) -> void:
 		ready_frames += 1
 	elif hud.menu.visible and hud.menu.page == "home" and not entering_game:
 		ready_frames += 1
-	hud.equipment_open = industry.opened
+	hud.equipment_open = industry.opened or industry.build_opened
 	hud.update_state(state,captured)
 	if not capture_path.is_empty() and not capture_pending:
 		if Time.get_ticks_msec() - started > 120000:

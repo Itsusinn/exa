@@ -816,7 +816,7 @@ mod tests {
         loaded.save(&path).unwrap();
         let bytes = std::fs::read(&path).unwrap();
         let save: Save = rmp_serde::from_slice(&bytes[8..]).unwrap();
-        assert_eq!(save.version, 11);
+        assert_eq!(save.version, 12);
         assert!(save.blocks.is_empty() && save.containers.is_empty() && save.items.is_none());
         assert_eq!(save.player_archive, save.chunk_archive);
         let restored = VoxelWorld::load(&path).unwrap();

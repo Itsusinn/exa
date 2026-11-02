@@ -192,6 +192,7 @@ func update_state(state: Dictionary, captured: bool) -> void:
 	elif not state.container_error.is_empty(): hint = state.container_error
 	elif not equipment_placement.is_empty():
 		hint = "%s · %s · 右键建造" % [equipment_placement.name,"可放置" if equipment_placement.valid else equipment_placement.reason]
+		if equipment_placement.kind in [0,4]: hint += " · Ø%d × %d m / %.0f L · B 规格" % [equipment_placement.diameter,equipment_placement.height,equipment_placement.design_capacity_m3*1000]
 		if equipment_placement.kind in [1,2,3,6]: hint += " · %s 轴 / R 旋转" % ["X","Y","Z"][equipment_placement.axis]
 		if equipment_placement.kind == 1: hint += " · P 铺管模式"
 		if not equipment_target.is_empty(): hint += " · E 查看 / 左键拆除"

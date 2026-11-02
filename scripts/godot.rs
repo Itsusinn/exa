@@ -38,6 +38,8 @@ const ACTIONS: &[&str] = &[
     "industry-thermal-graphics",
     "industry-route",
     "industry-route-graphics",
+    "industry-design",
+    "industry-design-graphics",
     "streaming",
     "commands",
     "streaming-perf",
@@ -151,6 +153,14 @@ fn execute() -> Result {
                     Some((
                         "client",
                         "industrial_pipe_routes_are_atomic_and_emit_graphics_fixture",
+                    )),
+                ),
+                "industry-design" | "industry-design-graphics" => (
+                    "industry_design",
+                    action == "industry-design",
+                    Some((
+                        "client",
+                        "industrial_parameterized_tanks_and_assembly_emit_graphics_fixture",
                     )),
                 ),
                 "containers" => (

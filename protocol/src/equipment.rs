@@ -15,6 +15,33 @@ pub const PIPE_START_RANGE: f32 = 32.0;
 pub const MAX_EQUIPMENT: usize = 1024;
 pub const MAX_MATERIAL_COMPONENTS: usize = 8;
 
+/// Immutable construction dimensions in metres (one voxel is one metre).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TankSize {
+    pub diameter: u8,
+    pub height: u8,
+}
+impl Default for TankSize {
+    fn default() -> Self {
+        Self {
+            diameter: 2,
+            height: 3,
+        }
+    }
+}
+impl TankSize {
+    pub fn valid(self) -> bool {
+        (2..=6).contains(&self.diameter) && (3..=12).contains(&self.height)
+    }
+    pub fn size(self) -> [i32; 3] {
+        [
+            i32::from(self.diameter),
+            i32::from(self.height),
+            i32::from(self.diameter),
+        ]
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EquipmentKind {
     Tank,
@@ -178,6 +205,8 @@ pub struct EquipmentSnapshot {
     /// Explicit sorted faces: -X,+X,-Y,+Y,-Z,+Z. None keeps the legacy axis pair.
     /// Only ordinary pipes may carry these two ends; no branches are implied.
     pub pipe_ends: Option<[u8; 2]>,
+    /// None retains the original 2 x 3 x 2 geometry. Only tanks and vessels use this.
+    pub tank_size: Option<TankSize>,
     pub contents: Vec<MaterialAmount>,
     pub internal_energy_j: f64,
     pub enabled: bool,
@@ -218,12 +247,25 @@ impl EquipmentReading {
     }
 }
 impl EquipmentSnapshot {
+    pub fn tank_size_or_default(&self) -> TankSize {
+        self.tank_size.unwrap_or_default()
+    }
+    pub fn size(&self) -> [i32; 3] {
+        if matches!(self.kind, EquipmentKind::Tank | EquipmentKind::Vessel) {
+            self.tank_size_or_default().size()
+        } else {
+            self.kind.size()
+        }
+    }
     pub fn valid(&self) -> bool {
-        let size = self.kind.size();
+        let size = self.size();
         self.id != 0
             && self.id <= i64::MAX as u64
             && self.revision <= i64::MAX as u64
             && self.axis <= 2
+            && self.tank_size.is_none_or(|size| {
+                matches!(self.kind, EquipmentKind::Tank | EquipmentKind::Vessel) && size.valid()
+            })
             && (self.kind != EquipmentKind::PipeRack || self.axis != 1)
             && match (self.kind, self.pipe_ends) {
                 (EquipmentKind::Pipe, Some([a, b])) => a < b && b < 6,
@@ -276,6 +318,13 @@ impl EquipmentSnapshot {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum EquipmentCommand {
+    CheckAssembly {
+        request_id: u64,
+        id: u64,
+        revision: u64,
+        yaw: f32,
+        pitch: f32,
+    },
     BeginPipe {
         request_id: u64,
         yaw: f32,
@@ -306,6 +355,7 @@ pub enum EquipmentCommand {
         pitch: f32,
         kind: EquipmentKind,
         axis: u8,
+        tank_size: Option<TankSize>,
         inventory_revision: u64,
         slot: u8,
     },
@@ -325,6 +375,63 @@ pub enum EquipmentCommand {
         opening: f64,
         pump_reversed: bool,
     },
+}
+
+/// Result of checking the four physical lines of an existing heat exchanger.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AssemblyStatus {
+    Complete,
+    Incomplete,
+    Stale,
+    Rejected,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AssemblyLine {
+    pub port: u8,
+    pub tank_id: Option<u64>,
+    pub pump_id: Option<u64>,
+    pub valve_id: Option<u64>,
+    pub valid: bool,
+    pub message: String,
+}
+
+/// An on-demand structural observation, not a persisted machine or a process solve.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AssemblyReport {
+    pub request_id: u64,
+    pub master_id: u64,
+    pub status: AssemblyStatus,
+    pub lines: Vec<AssemblyLine>,
+    pub message: String,
+}
+impl AssemblyReport {
+    pub fn valid(&self) -> bool {
+        let valid_id = |id| id > 0 && id <= i64::MAX as u64;
+        valid_id(self.request_id)
+            && valid_id(self.master_id)
+            && self.message.len() <= 256
+            && self.lines.len() <= 4
+            && self.lines.iter().enumerate().all(|(index, line)| {
+                line.port < 4
+                    && !self.lines[..index]
+                        .iter()
+                        .any(|earlier| earlier.port == line.port)
+                    && line.tank_id.is_none_or(valid_id)
+                    && line.pump_id.is_none_or(valid_id)
+                    && line.valve_id.is_none_or(valid_id)
+                    && line.message.len() <= 256
+            })
+            && match self.status {
+                AssemblyStatus::Complete => {
+                    self.lines.len() == 4 && self.lines.iter().all(|line| line.valid)
+                }
+                AssemblyStatus::Incomplete => {
+                    self.lines.len() == 4 && self.lines.iter().any(|line| !line.valid)
+                }
+                AssemblyStatus::Stale | AssemblyStatus::Rejected => true,
+            }
+    }
 }
 
 /// A validated interface of an existing device. New route cells exclude anchors.
@@ -383,6 +490,7 @@ mod tests {
             origin: [-1, 1, -1],
             axis: 0,
             pipe_ends: None,
+            tank_size: None,
             contents: vec![MaterialAmount {
                 material: "icheme:water".into(),
                 moles: 55.5,
@@ -413,8 +521,16 @@ mod tests {
                 pitch: -0.5,
                 kind: EquipmentKind::Tank,
                 axis: 0,
+                tank_size: None,
                 inventory_revision: 7,
                 slot: 1,
+            },
+            EquipmentCommand::CheckAssembly {
+                request_id: 1,
+                id: 2,
+                revision: 3,
+                yaw: 0.0,
+                pitch: 0.0,
             },
             EquipmentCommand::Remove {
                 id: 1,
@@ -465,6 +581,90 @@ mod tests {
         invalid = tank();
         invalid.axis = 1;
         assert!(!invalid.valid());
+    }
+
+    #[test]
+    fn tank_dimensions_are_bounded_and_preserve_legacy_default() {
+        let mut device = tank();
+        assert_eq!(device.size(), [2, 3, 2]);
+        device.tank_size = Some(TankSize::default());
+        assert_eq!(device.size(), [2, 3, 2]);
+        for kind in [EquipmentKind::Tank, EquipmentKind::Vessel] {
+            device.kind = kind;
+            for diameter in 2..=6 {
+                for height in 3..=12 {
+                    device.tank_size = Some(TankSize { diameter, height });
+                    assert!(device.valid());
+                    assert_eq!(
+                        rmp_serde::from_slice::<EquipmentSnapshot>(
+                            &rmp_serde::to_vec(&device).unwrap()
+                        )
+                        .unwrap(),
+                        device
+                    );
+                }
+            }
+        }
+        for (diameter, height) in [(0, 3), (1, 3), (7, 3), (2, 2), (2, 13), (255, 255)] {
+            device.tank_size = Some(TankSize { diameter, height });
+            assert!(!device.valid());
+        }
+        device.tank_size = Some(TankSize {
+            diameter: 6,
+            height: 12,
+        });
+        device.origin[0] = crate::WORLD_LIMIT - 5;
+        assert!(!device.valid());
+        device.origin = [0, 1, 0];
+        device.kind = EquipmentKind::Pipe;
+        assert!(!device.valid());
+    }
+
+    #[test]
+    fn assembly_reports_validate_bounded_complete_and_incomplete_lines() {
+        let mut report = AssemblyReport {
+            request_id: 1,
+            master_id: 2,
+            status: AssemblyStatus::Complete,
+            lines: (0..4)
+                .map(|port| AssemblyLine {
+                    port,
+                    tank_id: Some(u64::from(port) + 3),
+                    pump_id: None,
+                    valve_id: Some(8),
+                    valid: true,
+                    message: "connected".into(),
+                })
+                .collect(),
+            message: "complete".into(),
+        };
+        assert!(report.valid());
+        let message = crate::ServerMessage::AssemblyReport(report.clone());
+        assert_eq!(
+            rmp_serde::from_slice::<crate::ServerMessage>(&rmp_serde::to_vec(&message).unwrap())
+                .unwrap(),
+            message
+        );
+        report.lines[0].valid = false;
+        assert!(!report.valid());
+        report.status = AssemblyStatus::Incomplete;
+        assert!(report.valid());
+        report.lines[1].port = 0;
+        assert!(!report.valid());
+        report.lines[1].port = 1;
+        report.lines[0].tank_id = Some(0);
+        assert!(!report.valid());
+        report.lines[0].tank_id = None;
+        report.lines[0].message = "x".repeat(257);
+        assert!(!report.valid());
+        report.lines.clear();
+        assert!(!report.valid());
+        report.status = AssemblyStatus::Stale;
+        assert!(report.valid());
+        report.status = AssemblyStatus::Rejected;
+        assert!(report.valid());
+        report.master_id = 0;
+        assert!(!report.valid());
     }
 
     #[test]

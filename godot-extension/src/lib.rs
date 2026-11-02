@@ -241,6 +241,94 @@ impl GameBridge {
     }
 
     #[func]
+    fn tank_build_spec(&self) -> VarDictionary {
+        let Some(kind) = self.session.selected_equipment().filter(|kind| {
+            matches!(
+                kind,
+                protocol::EquipmentKind::Tank | protocol::EquipmentKind::Vessel
+            )
+        }) else {
+            return VarDictionary::new();
+        };
+        let size = self.session.tank_size;
+        vdict! { "name" => kind.item_name(), "diameter" => i32::from(size.diameter), "height" => i32::from(size.height) }
+    }
+
+    #[func]
+    fn set_tank_build_spec(&mut self, diameter: i32, height: i32) -> bool {
+        let (Ok(diameter), Ok(height)) = (u8::try_from(diameter), u8::try_from(height)) else {
+            return false;
+        };
+        let size = protocol::TankSize { diameter, height };
+        if !size.valid() || self.tank_build_spec().is_empty() {
+            return false;
+        }
+        self.session.tank_size = size;
+        true
+    }
+
+    #[func]
+    fn tank_build_capacity(&self, diameter: i32, height: i32) -> f64 {
+        let (Ok(diameter), Ok(height)) = (u8::try_from(diameter), u8::try_from(height)) else {
+            return 0.0;
+        };
+        let size = protocol::TankSize { diameter, height };
+        if size.valid() {
+            presentation::tank_capacity_for_size(size)
+        } else {
+            0.0
+        }
+    }
+
+    #[func]
+    fn tank_geometry(&self, kind: i32, diameter: i32, height: i32) -> VarDictionary {
+        let (Ok(diameter), Ok(height)) = (u8::try_from(diameter), u8::try_from(height)) else {
+            return VarDictionary::new();
+        };
+        let size = protocol::TankSize { diameter, height };
+        if !size.valid() || !matches!(kind, 0 | 4) {
+            return VarDictionary::new();
+        }
+        geometry(presentation::equipment_shape_sized(
+            if kind == 0 {
+                protocol::EquipmentKind::Tank
+            } else {
+                protocol::EquipmentKind::Vessel
+            },
+            0,
+            Some(size),
+        ))
+    }
+
+    #[func]
+    fn check_assembly(&mut self, id: i64, revision: i64, yaw: f32, pitch: f32) {
+        if id > 0 && revision >= 0 {
+            self.session
+                .check_assembly(id as u64, revision as u64, yaw, pitch);
+        }
+    }
+
+    #[func]
+    fn clear_assembly(&mut self) {
+        self.session.clear_assembly();
+    }
+
+    #[func]
+    fn assembly_report(&self) -> VarDictionary {
+        let Some(report) = &self.session.assembly_report else {
+            return vdict! { "pending" => self.session.assembly_pending };
+        };
+        let lines: VarArray = report.lines.iter().map(|line| vdict! {
+            "port" => i32::from(line.port), "tank_id" => line.tank_id.unwrap_or(0) as i64,
+            "pump_id" => line.pump_id.unwrap_or(0) as i64, "valve_id" => line.valve_id.unwrap_or(0) as i64,
+            "valid" => line.valid, "message" => line.message.as_str()
+        }.to_variant()).collect();
+        vdict! { "pending" => false, "request_id" => report.request_id as i64, "master_id" => report.master_id as i64,
+        "status" => match report.status { protocol::AssemblyStatus::Complete => "complete", protocol::AssemblyStatus::Incomplete => "incomplete", protocol::AssemblyStatus::Stale => "stale", protocol::AssemblyStatus::Rejected => "rejected" },
+        "message" => report.message.as_str(), "lines" => &lines }
+    }
+
+    #[func]
     fn equipment_geometry(&self, kind: i32, axis: i32) -> VarDictionary {
         if !(0..=6).contains(&kind) || !(0..=2).contains(&axis) {
             return VarDictionary::new();
@@ -568,6 +656,7 @@ impl GameBridge {
 }
 
 fn equipment_dictionary(device: &protocol::EquipmentSnapshot) -> VarDictionary {
+    let size = device.tank_size_or_default();
     let pipe_ends: VarArray = device
         .pipe_ends
         .into_iter()
@@ -588,6 +677,8 @@ fn equipment_dictionary(device: &protocol::EquipmentSnapshot) -> VarDictionary {
     "name" => device.kind.item_name(), "kind" => match device.kind { protocol::EquipmentKind::Tank => 0i32, protocol::EquipmentKind::Pipe => 1, protocol::EquipmentKind::Pump => 2, protocol::EquipmentKind::Valve => 3, protocol::EquipmentKind::Vessel => 4, protocol::EquipmentKind::HeatExchanger => 5, protocol::EquipmentKind::PipeRack => 6 },
     "origin" => Vector3i::new(device.origin[0],device.origin[1],device.origin[2]), "axis" => i64::from(device.axis),
     "ports" => &ports, "pipe_ends" => &pipe_ends, "contents" => &contents, "internal_energy_j" => device.internal_energy_j,
+    "diameter" => i32::from(size.diameter), "height" => i32::from(size.height),
+    "design_capacity_m3" => presentation::tank_capacity_m3(device),
     "empty" => device.is_empty(), "enabled" => device.enabled, "opening" => device.opening,
     "pump_reversed" => device.pump_reversed, "thermal" => &thermal_settings_dictionary(device.thermal.as_ref()), "reading" => &reading_dictionary(device.reading.as_ref()) }
 }

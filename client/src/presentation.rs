@@ -1,30 +1,117 @@
 use crate::mesh::{Mesh, Vertex, NORMALS};
 use game_client_core::voxel::Client3d;
 pub use game_simulation::equipment::ports as equipment_ports;
+pub use game_simulation::equipment::tank_capacity_m3;
 use protocol::*;
 
 /// Reusable local-space equipment mesh; instances carry their authoritative origin.
 pub fn equipment_shape(kind: EquipmentKind, axis: u8) -> Mesh {
+    equipment_shape_sized(kind, axis, None)
+}
+
+pub fn tank_capacity_for_size(size: TankSize) -> f64 {
+    tank_capacity_m3(&EquipmentSnapshot {
+        id: 1,
+        revision: 0,
+        kind: EquipmentKind::Tank,
+        origin: [0; 3],
+        axis: 0,
+        tank_size: Some(size),
+        pipe_ends: None,
+        contents: vec![],
+        internal_energy_j: 0.0,
+        enabled: false,
+        opening: 1.0,
+        pump_reversed: false,
+        thermal: None,
+        reading: None,
+    })
+}
+
+pub fn equipment_shape_sized(kind: EquipmentKind, axis: u8, size: Option<TankSize>) -> Mesh {
     let mut mesh = Mesh::default();
     let steel = [0.57, 0.62, 0.64];
     let dark = [0.27, 0.31, 0.33];
+    let size = size.unwrap_or_default();
+    let diameter = f32::from(size.diameter);
+    let height = f32::from(size.height);
+    let template = EquipmentSnapshot {
+        id: 1,
+        revision: 0,
+        kind,
+        origin: [0; 3],
+        axis,
+        tank_size: matches!(kind, EquipmentKind::Tank | EquipmentKind::Vessel).then_some(size),
+        pipe_ends: None,
+        contents: vec![],
+        internal_energy_j: 0.0,
+        enabled: false,
+        opening: 1.0,
+        pump_reversed: false,
+        thermal: None,
+        reading: None,
+    };
+    let nozzle_z = game_simulation::equipment::tank_nozzle_z_m(&template);
+    let neck = game_simulation::equipment::tank_nozzle_length_m(&template);
     match kind {
         EquipmentKind::Tank => {
-            cylinder(&mut mesh, [1.0, 0.0, 1.0], 1, 2.85, 0.9, steel);
+            cylinder(
+                &mut mesh,
+                [diameter / 2.0, 0.0, diameter / 2.0],
+                1,
+                height - 0.15,
+                diameter / 2.0 - 0.1,
+                steel,
+            );
             // Nozzles align with the shared port centres; all pieces stay inside occupied cells.
-            cylinder(&mut mesh, [0.0, 0.5, 0.5], 0, 0.4, 0.125, dark);
-            cylinder(&mut mesh, [1.6, 0.5, 0.5], 0, 0.4, 0.125, dark);
+            cylinder(&mut mesh, [0.0, 0.5, nozzle_z], 0, neck, 0.125, dark);
+            cylinder(
+                &mut mesh,
+                [diameter - neck, 0.5, nozzle_z],
+                0,
+                neck,
+                0.125,
+                dark,
+            );
         }
         EquipmentKind::Vessel => {
             // Closed, banded pressure vessel. The bands and top neck distinguish
             // it from the legacy atmospheric tank without changing its ports.
-            cylinder(&mut mesh, [1.0, 0.0, 1.0], 1, 2.85, 0.9, [0.42, 0.51, 0.58]);
-            for y in [0.35, 2.35] {
-                cylinder(&mut mesh, [1.0, y, 1.0], 1, 0.12, 0.925, dark);
+            cylinder(
+                &mut mesh,
+                [diameter / 2.0, 0.0, diameter / 2.0],
+                1,
+                height - 0.15,
+                diameter / 2.0 - 0.1,
+                [0.42, 0.51, 0.58],
+            );
+            for y in [0.35, height - 0.65] {
+                cylinder(
+                    &mut mesh,
+                    [diameter / 2.0, y, diameter / 2.0],
+                    1,
+                    0.12,
+                    diameter / 2.0 - 0.075,
+                    dark,
+                );
             }
-            cylinder(&mut mesh, [1.0, 2.85, 1.0], 1, 0.15, 0.22, steel);
-            cylinder(&mut mesh, [0.0, 0.5, 0.5], 0, 0.4, 0.125, dark);
-            cylinder(&mut mesh, [1.6, 0.5, 0.5], 0, 0.4, 0.125, dark);
+            cylinder(
+                &mut mesh,
+                [diameter / 2.0, height - 0.15, diameter / 2.0],
+                1,
+                0.15,
+                0.22,
+                steel,
+            );
+            cylinder(&mut mesh, [0.0, 0.5, nozzle_z], 0, neck, 0.125, dark);
+            cylinder(
+                &mut mesh,
+                [diameter - neck, 0.5, nozzle_z],
+                0,
+                neck,
+                0.125,
+                dark,
+            );
         }
         EquipmentKind::HeatExchanger => {
             // Two separate, colour-coded passages share a plate body. Their
@@ -370,6 +457,68 @@ mod tests {
     use game_simulation::grid::Grid;
 
     #[test]
+    fn sized_tanks_match_shared_collision_and_keep_separate_meshes() {
+        for kind in [EquipmentKind::Tank, EquipmentKind::Vessel] {
+            for diameter in [2, 3, 6] {
+                for height in [3, 6, 12] {
+                    let size = TankSize { diameter, height };
+                    let device = EquipmentSnapshot {
+                        id: 1,
+                        revision: 0,
+                        kind,
+                        origin: [0; 3],
+                        axis: 0,
+                        tank_size: Some(size),
+                        pipe_ends: None,
+                        contents: vec![],
+                        internal_energy_j: 0.0,
+                        enabled: false,
+                        opening: 1.0,
+                        pump_reversed: false,
+                        thermal: None,
+                        reading: None,
+                    };
+                    let mesh = equipment_shape_sized(kind, 0, Some(size));
+                    let boxes = game_simulation::equipment::collision_boxes(&device);
+                    assert!(!mesh.vertices.is_empty());
+                    for vertex in &mesh.vertices {
+                        assert!(
+                            boxes.iter().any(|shape| (0..3)
+                                .all(|i| vertex.position[i] >= shape.min[i] - 1e-5
+                                    && vertex.position[i] <= shape.max[i] + 1e-5)),
+                            "{kind:?} {size:?} {:?}",
+                            vertex.position
+                        );
+                    }
+                    let max_y = mesh
+                        .vertices
+                        .iter()
+                        .map(|v| v.position[1])
+                        .fold(0.0, f32::max);
+                    assert!(
+                        (max_y
+                            - (f32::from(height)
+                                - if kind == EquipmentKind::Tank {
+                                    0.15
+                                } else {
+                                    0.0
+                                }))
+                        .abs()
+                            < 1e-5
+                    );
+                    for port in equipment_ports(&device) {
+                        assert!(mesh
+                            .vertices
+                            .iter()
+                            .any(|v| (v.position[0] - port.position[0]).abs() < 1e-5
+                                && (v.position[2] - port.position[2]).abs() <= 0.126));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn equipment_meshes_stay_inside_shared_collision_envelopes() {
         for kind in [
             EquipmentKind::Pump,
@@ -388,6 +537,7 @@ mod tests {
                     continue;
                 }
                 let device = EquipmentSnapshot {
+                    tank_size: None,
                     id: 1,
                     revision: 0,
                     kind,
@@ -424,6 +574,7 @@ mod tests {
         for first in 0..6 {
             for second in first + 1..6 {
                 let device = EquipmentSnapshot {
+                    tank_size: None,
                     id: 1,
                     revision: 0,
                     kind: EquipmentKind::Pipe,

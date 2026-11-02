@@ -1,6 +1,6 @@
 //! Shared device geometry, occupancy and ray selection for authority and prediction.
 use crate::{grid::Grid, EYE_HEIGHT};
-use protocol::{EquipmentKind, EquipmentSnapshot, AIR, BLOCK_REACH, WATER};
+use protocol::{EquipmentKind, EquipmentSnapshot, TankSize, AIR, BLOCK_REACH, WATER};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CollisionBox {
@@ -36,7 +36,19 @@ pub struct WorldHit {
 /// Anchor the entire footprint outside the selected voxel face, including on negative axes.
 /// The authority still validates bounds, inventory and occupancy before committing placement.
 pub fn placement_origin(hit: WorldHit, kind: EquipmentKind) -> [i32; 3] {
-    let size = kind.size();
+    placement_origin_sized(hit, kind, None)
+}
+
+pub fn placement_origin_sized(
+    hit: WorldHit,
+    kind: EquipmentKind,
+    tank_size: Option<TankSize>,
+) -> [i32; 3] {
+    let size = if matches!(kind, EquipmentKind::Tank | EquipmentKind::Vessel) {
+        tank_size.unwrap_or_default().size()
+    } else {
+        kind.size()
+    };
     std::array::from_fn(|i| match hit.normal[i] {
         -1 => hit.position[i].saturating_sub(size[i]),
         1 => hit.position[i].saturating_add(1),
@@ -46,7 +58,7 @@ pub fn placement_origin(hit: WorldHit, kind: EquipmentKind) -> [i32; 3] {
 
 pub fn bounds(device: &EquipmentSnapshot) -> CollisionBox {
     let min = device.origin.map(|v| v as f32);
-    let size = device.kind.size();
+    let size = device.size();
     CollisionBox {
         min,
         max: std::array::from_fn(|i| min[i] + size[i] as f32),
@@ -54,7 +66,7 @@ pub fn bounds(device: &EquipmentSnapshot) -> CollisionBox {
 }
 
 pub fn occupied_cells(device: &EquipmentSnapshot) -> Vec<[i32; 3]> {
-    let size = device.kind.size();
+    let size = device.size();
     (0..size[1])
         .flat_map(|y| (0..size[2]).flat_map(move |z| (0..size[0]).map(move |x| [x, y, z])))
         .filter_map(|offset| {
@@ -65,6 +77,38 @@ pub fn occupied_cells(device: &EquipmentSnapshot) -> Vec<[i32; 3]> {
             ])
         })
         .collect()
+}
+
+/// The retained cylindrical model excludes the top 0.2 m from fluid capacity.
+pub fn tank_fill_height_m(device: &EquipmentSnapshot) -> f64 {
+    f64::from(device.tank_size_or_default().height) - 0.2
+}
+
+pub fn tank_area_m2(device: &EquipmentSnapshot) -> f64 {
+    let radius = f64::from(device.tank_size_or_default().diameter) / 2.0 - 0.1;
+    std::f64::consts::PI * radius * radius
+}
+
+pub fn tank_capacity_m3(device: &EquipmentSnapshot) -> f64 {
+    tank_area_m2(device) * tank_fill_height_m(device)
+}
+
+/// Fixed lumped mass centre used by the existing sealed-vessel energy model.
+pub fn tank_centroid_height_m(device: &EquipmentSnapshot) -> f64 {
+    tank_fill_height_m(device) / 2.0
+}
+
+/// The nearest cell-centred row to the axis, retaining local z=0.5 for old tanks.
+pub fn tank_nozzle_z_m(device: &EquipmentSnapshot) -> f32 {
+    f32::from(device.tank_size_or_default().diameter.saturating_sub(1) / 2) + 0.5
+}
+
+/// Neck length reaches inside the cylindrical wall; the original neck is 0.4 m.
+pub fn tank_nozzle_length_m(device: &EquipmentSnapshot) -> f32 {
+    let centre = f32::from(device.tank_size_or_default().diameter) / 2.0;
+    let radius = centre - 0.1;
+    let offset = tank_nozzle_z_m(device) - centre;
+    (centre - (radius * radius - offset * offset).max(0.0).sqrt() + 0.1).max(0.4)
 }
 
 /// Face order is part of the protocol: -X, +X, -Y, +Y, -Z, +Z.
@@ -151,31 +195,46 @@ pub fn collision_boxes(device: &EquipmentSnapshot) -> Vec<CollisionBox> {
         }
         EquipmentKind::Tank | EquipmentKind::Vessel => {
             let mut boxes = Vec::with_capacity(34);
+            let size = device.tank_size_or_default();
+            let diameter = f32::from(size.diameter);
+            let height = f32::from(size.height);
+            let centre = diameter / 2.0;
             let shell_radius = if device.kind == EquipmentKind::Vessel {
-                0.925f32
+                centre - 0.075
             } else {
-                0.9
+                centre - 0.1
             };
             for band in 0..32 {
-                let z0 = 1.0 - shell_radius + band as f32 * (2.0 * shell_radius / 32.0);
+                let z0 = centre - shell_radius + band as f32 * (2.0 * shell_radius / 32.0);
                 let z1 = z0 + 2.0 * shell_radius / 32.0;
-                let nearest = if z0 <= 1.0 && z1 >= 1.0 {
+                let nearest = if z0 <= centre && z1 >= centre {
                     0.0
                 } else {
-                    (z0 - 1.0).abs().min((z1 - 1.0).abs())
+                    (z0 - centre).abs().min((z1 - centre).abs())
                 };
                 let radius = (shell_radius * shell_radius - nearest * nearest)
                     .max(0.0)
                     .sqrt();
                 boxes.push(translated(
-                    [1.0 - radius, 0.0, z0],
-                    [1.0 + radius, 2.85, z1],
+                    [centre - radius, 0.0, z0],
+                    [centre + radius, height - 0.15, z1],
                 ));
             }
-            boxes.push(translated([0.0, 0.375, 0.375], [0.4, 0.625, 0.625]));
-            boxes.push(translated([1.6, 0.375, 0.375], [2.0, 0.625, 0.625]));
+            let nozzle_z = tank_nozzle_z_m(device);
+            let neck = tank_nozzle_length_m(device);
+            boxes.push(translated(
+                [0.0, 0.375, nozzle_z - 0.125],
+                [neck, 0.625, nozzle_z + 0.125],
+            ));
+            boxes.push(translated(
+                [diameter - neck, 0.375, nozzle_z - 0.125],
+                [diameter, 0.625, nozzle_z + 0.125],
+            ));
             if device.kind == EquipmentKind::Vessel {
-                boxes.push(translated([0.78, 2.85, 0.78], [1.22, 3.0, 1.22]));
+                boxes.push(translated(
+                    [centre - 0.22, height - 0.15, centre - 0.22],
+                    [centre + 0.22, height, centre + 0.22],
+                ));
             }
             boxes
         }
@@ -218,7 +277,7 @@ pub fn ports(device: &EquipmentSnapshot) -> Vec<EquipmentPort> {
     } else {
         device.axis.min(2) as usize
     };
-    let length = device.kind.size()[axis] as f32;
+    let length = device.size()[axis] as f32;
     let circuits = if device.kind == EquipmentKind::HeatExchanger {
         2
     } else {
@@ -230,6 +289,8 @@ pub fn ports(device: &EquipmentSnapshot) -> Vec<EquipmentPort> {
                 let mut position = origin.map(|v| v + 0.5);
                 if circuits == 2 {
                     position[2] += f32::from(circuit) * 2.0;
+                } else if matches!(device.kind, EquipmentKind::Tank | EquipmentKind::Vessel) {
+                    position[2] = origin[2] + tank_nozzle_z_m(device);
                 }
                 position[axis] = origin[axis] + if sign < 0 { 0.0 } else { length };
                 let mut normal = [0; 3];
@@ -308,7 +369,7 @@ pub fn target(map: &Grid, feet: [f32; 3], yaw: f32, pitch: f32) -> Option<WorldH
         for bounds in collision_boxes(device) {
             if let Some((t, normal)) = ray_box(eye, direction, bounds) {
                 if t < distance && t <= BLOCK_REACH {
-                    let size = device.kind.size();
+                    let size = device.size();
                     let position = std::array::from_fn(|i| {
                         ((eye[i] + direction[i] * (t + 1e-4)).floor() as i32)
                             .clamp(device.origin[i], device.origin[i] + size[i] - 1)
@@ -389,6 +450,7 @@ mod tests {
             opening: 1.0,
             pump_reversed: false,
             pipe_ends: None,
+            tank_size: None,
             thermal: (kind == EquipmentKind::HeatExchanger).then(Default::default),
             reading: None,
         }
@@ -404,6 +466,71 @@ mod tests {
             ports(&tank)[1],
             ports(&device(EquipmentKind::Pipe, [1, 1, -1], 1))[0]
         ));
+    }
+    #[test]
+    fn parametric_tanks_share_bounded_geometry_and_grid_aligned_nozzles() {
+        for kind in [EquipmentKind::Tank, EquipmentKind::Vessel] {
+            let legacy = device(kind, [-17, 1, -17], 0);
+            let mut explicit = legacy.clone();
+            explicit.tank_size = Some(TankSize::default());
+            assert_eq!(collision_boxes(&legacy), collision_boxes(&explicit));
+            assert_eq!(ports(&legacy), ports(&explicit));
+            assert_eq!(
+                tank_capacity_m3(&legacy),
+                std::f64::consts::PI * 0.9 * 0.9 * 2.8
+            );
+            assert_eq!(tank_centroid_height_m(&legacy), 1.4);
+            for diameter in 2..=6 {
+                for height in 3..=12 {
+                    explicit.tank_size = Some(TankSize { diameter, height });
+                    let extent = bounds(&explicit);
+                    assert_eq!(
+                        occupied_cells(&explicit).len(),
+                        usize::from(diameter).pow(2) * usize::from(height)
+                    );
+                    for shape in collision_boxes(&explicit) {
+                        assert!((0..3).all(
+                            |i| shape.min[i] >= extent.min[i] && shape.max[i] <= extent.max[i]
+                        ));
+                    }
+                    for port in ports(&explicit) {
+                        let cell = [
+                            if port.id == 0 {
+                                -18
+                            } else {
+                                -17 + i32::from(diameter)
+                            },
+                            1,
+                            -17 + i32::from((diameter - 1) / 2),
+                        ];
+                        let pipe = device(EquipmentKind::Pipe, cell, 0);
+                        assert!(connected(port, ports(&pipe)[usize::from(1 - port.id)]));
+                        let mut inside = port.position;
+                        inside[0] -= port.normal[0] as f32 * 0.01;
+                        assert!(collision_boxes(&explicit)
+                            .iter()
+                            .any(|shape| shape.contains(inside)));
+                    }
+                }
+            }
+        }
+        let hit = WorldHit {
+            position: [-1, 7, -1],
+            normal: [-1, 0, 0],
+            equipment: None,
+            distance: 1.0,
+        };
+        assert_eq!(
+            placement_origin_sized(
+                hit,
+                EquipmentKind::Tank,
+                Some(TankSize {
+                    diameter: 6,
+                    height: 12
+                })
+            ),
+            [-7, 7, -1]
+        );
     }
     #[test]
     fn exchanger_ports_keep_two_independent_channels_and_full_footprint() {

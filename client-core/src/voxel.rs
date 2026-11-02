@@ -8,6 +8,7 @@ pub struct Client3d {
     pub equipment_revision: u64,
     pub equipment_geometry_revision: u64,
     pub pipe_reply: Option<PipeRouteReply>,
+    pub assembly_reply: Option<AssemblyReport>,
     equipment_server_revision: u64,
     authoritative_body: Body,
     pub dirty_chunks: BTreeSet<[i32; 3]>,
@@ -35,6 +36,7 @@ impl Default for Client3d {
             equipment_revision: 0,
             equipment_geometry_revision: 0,
             pipe_reply: None,
+            assembly_reply: None,
             equipment_server_revision: 0,
             authoritative_body: Body::default(),
             dirty_chunks: BTreeSet::new(),
@@ -134,6 +136,7 @@ impl Client3d {
                                     || old.origin != device.origin
                                     || old.axis != device.axis
                                     || old.pipe_ends != device.pipe_ends
+                                    || old.tank_size != device.tank_size
                             })
                         });
                     self.terrain.equipment = next;
@@ -149,6 +152,11 @@ impl Client3d {
             ServerMessage::PipeRouteReply(reply) => {
                 if reply.valid() {
                     self.pipe_reply = Some(reply);
+                }
+            }
+            ServerMessage::AssemblyReport(report) => {
+                if report.valid() {
+                    self.assembly_reply = Some(report);
                 }
             }
             ServerMessage::World3d(s) => {
@@ -252,6 +260,7 @@ mod tests {
             pump_reversed: false,
             thermal: None,
             pipe_ends: None,
+            tank_size: None,
             reading: None,
         };
         m.apply(ServerMessage::EquipmentState {
@@ -274,8 +283,20 @@ mod tests {
         device.origin[0] += 1;
         m.apply(ServerMessage::EquipmentState {
             revision: 3,
+            devices: vec![device.clone()],
+        });
+        assert_eq!(m.body, m.authoritative_body);
+        m.body.position[0] += 0.25;
+        let geometry_revision = m.equipment_geometry_revision;
+        device.tank_size = Some(TankSize {
+            diameter: 4,
+            height: 8,
+        });
+        m.apply(ServerMessage::EquipmentState {
+            revision: 4,
             devices: vec![device],
         });
+        assert_eq!(m.equipment_geometry_revision, geometry_revision + 1);
         assert_eq!(m.body, m.authoritative_body);
     }
     #[test]
@@ -295,6 +316,7 @@ mod tests {
             pump_reversed: false,
             thermal: None,
             pipe_ends: None,
+            tank_size: None,
             reading: None,
         };
         m.apply(ServerMessage::EquipmentState {

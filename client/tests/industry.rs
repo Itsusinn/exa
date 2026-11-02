@@ -148,6 +148,16 @@ impl Peer {
     }
 
     async fn place(&mut self, kind: EquipmentKind, axis: u8, target: [i32; 3]) {
+        self.place_sized(kind, axis, target, None).await;
+    }
+
+    async fn place_sized(
+        &mut self,
+        kind: EquipmentKind,
+        axis: u8,
+        target: [i32; 3],
+        tank_size: Option<TankSize>,
+    ) {
         let name = kind.item_name();
         let slot = self
             .model
@@ -179,6 +189,7 @@ impl Peer {
             pitch,
             kind,
             axis,
+            tank_size,
             inventory_revision,
             slot,
         }))
@@ -249,6 +260,300 @@ impl Peer {
         self.wait(|m| m.terrain.equipment[&id].revision > device.revision)
             .await;
     }
+
+    async fn check_assembly(&mut self, id: u64, request_id: u64) -> AssemblyReport {
+        let device = self.model.lock().await.terrain.equipment[&id].clone();
+        let (yaw, pitch) = self.point_at(&device).await;
+        self.send(ClientMessage::Equipment(EquipmentCommand::CheckAssembly {
+            request_id,
+            id,
+            revision: device.revision,
+            yaw,
+            pitch,
+        }))
+        .await;
+        self.wait(|m| {
+            m.assembly_reply
+                .as_ref()
+                .is_some_and(|r| r.request_id == request_id)
+        })
+        .await;
+        self.model.lock().await.assembly_reply.clone().unwrap()
+    }
+}
+
+#[tokio::test]
+async fn industrial_parameterized_tanks_and_assembly_emit_graphics_fixture() {
+    tokio::time::timeout(Duration::from_secs(120), async {
+        let mut world = VoxelWorld::new(12345).unwrap();
+        for x in [-16, 0, 16] {
+            for z in [0, 16, 32] {
+                for y in (0..WORLD_HEIGHT).step_by(16) {
+                    let origin = [x, y, z];
+                    if !world.terrain.blocks.contains_key(&origin) {
+                        assert!(world.terrain.apply_chunk(origin, &vec![AIR; 4096]));
+                    }
+                }
+            }
+        }
+        for x in -10..28 {
+            for z in 10..39 {
+                world.terrain.set([x, 80, z], STONE);
+                for y in 81..100 {
+                    world.terrain.set([x, y, z], AIR);
+                }
+            }
+        }
+        let (endpoint, cert) = make_server_endpoint("127.0.0.1:0".parse().unwrap()).unwrap();
+        let address = endpoint.local_addr().unwrap();
+        let manager = Arc::new(Mutex::new(world));
+        let (stop, stopped) = oneshot::channel();
+        let server = tokio::spawn(serve_endpoint(endpoint, manager.clone(), async {
+            let _ = stopped.await;
+        }));
+        let mut first = Peer::connect(address, cert.clone(), 97).await;
+        let mut second = Peer::connect(address, cert, 98).await;
+        first.teleport([0.5, 81.0, 13.5]).await;
+        second.teleport([16.5, 81.0, 24.5]).await;
+        for count in 1..=3 {
+            tokio::time::sleep(Duration::from_millis(550)).await;
+            first.chat("/industry kit").await;
+            first
+                .wait(|m| {
+                    m.inventory
+                        .iter()
+                        .filter(|i| i.name == TANK_ITEM)
+                        .map(|i| i.quantity as usize)
+                        .sum::<usize>()
+                        >= count * 2
+                })
+                .await;
+        }
+        second.chat("/industry kit").await;
+        second
+            .wait(|m| m.inventory.iter().any(|i| i.name == TANK_ITEM))
+            .await;
+        let mut ids = std::collections::BTreeMap::new();
+        for z in [16, 18] {
+            let stand_z = if z == 16 { 13.5 } else { 21.5 };
+            for (x, kind) in [
+                (-5, EquipmentKind::Tank),
+                (-3, EquipmentKind::Pump),
+                (-2, EquipmentKind::Valve),
+                (-1, EquipmentKind::Pipe),
+                (2, EquipmentKind::Pipe),
+                (3, EquipmentKind::Tank),
+            ] {
+                first.teleport([x as f32 + 0.5, 81.0, stand_z]).await;
+                first.place(kind, 0, [x, 80, z]).await;
+                first
+                    .wait(|m| m.terrain.equipment.values().any(|d| d.origin == [x, 81, z]))
+                    .await;
+                let id = first
+                    .model
+                    .lock()
+                    .await
+                    .terrain
+                    .equipment
+                    .values()
+                    .find(|d| d.origin == [x, 81, z])
+                    .unwrap()
+                    .id;
+                ids.insert((x, z), id);
+            }
+        }
+        first.teleport([0.5, 81.0, 13.5]).await;
+        first
+            .place(EquipmentKind::HeatExchanger, 0, [0, 80, 16])
+            .await;
+        first.wait(|m| m.terrain.equipment.len() == 13).await;
+        second.wait(|m| m.terrain.equipment.len() == 13).await;
+        let hx = first
+            .model
+            .lock()
+            .await
+            .terrain
+            .equipment
+            .values()
+            .find(|d| d.kind == EquipmentKind::HeatExchanger)
+            .unwrap()
+            .id;
+
+        // Invalid dimensions are rejected before any part of the build or inventory commits.
+        first.teleport([8.5, 81.0, 13.5]).await;
+        first.select_equipment(TANK_ITEM).await;
+        let before = first.model.lock().await.inventory.clone();
+        first.model.lock().await.container_error.clear();
+        first
+            .place_sized(
+                EquipmentKind::Tank,
+                0,
+                [8, 80, 16],
+                Some(TankSize {
+                    diameter: 7,
+                    height: 6,
+                }),
+            )
+            .await;
+        first.wait(|m| !m.container_error.is_empty()).await;
+        assert_eq!(first.model.lock().await.inventory, before);
+        assert_eq!(manager.lock().await.terrain.equipment.len(), 13);
+
+        // Both peers propose the same footprint. Only one full-size instance and one item are committed.
+        second.teleport([10.5, 81.0, 13.5]).await;
+        second.select_equipment(TANK_ITEM).await;
+        first.model.lock().await.container_error.clear();
+        second.model.lock().await.container_error.clear();
+        let size = TankSize {
+            diameter: 4,
+            height: 6,
+        };
+        let second_before = second.model.lock().await.inventory.clone();
+        tokio::join!(
+            first.place_sized(EquipmentKind::Tank, 0, [8, 80, 16], Some(size)),
+            second.place_sized(EquipmentKind::Tank, 0, [8, 80, 16], Some(size)),
+        );
+        first
+            .wait(|m| {
+                m.terrain.equipment.len() == 14
+                    && (m.inventory.revision > before.revision || !m.container_error.is_empty())
+            })
+            .await;
+        second
+            .wait(|m| {
+                m.terrain.equipment.len() == 14
+                    && (m.inventory.revision > second_before.revision
+                        || !m.container_error.is_empty())
+            })
+            .await;
+        let item_count = |bag: &PlayerInventory| {
+            bag.iter()
+                .filter(|i| i.name == TANK_ITEM)
+                .map(|i| i.quantity)
+                .sum::<u32>()
+        };
+        let first_after = first.model.lock().await.inventory.clone();
+        let second_after = second.model.lock().await.inventory.clone();
+        assert_eq!(
+            item_count(&before) + item_count(&second_before),
+            item_count(&first_after) + item_count(&second_after) + 1
+        );
+        assert!((first_after == before) ^ (second_after == second_before));
+        let large = first
+            .model
+            .lock()
+            .await
+            .terrain
+            .equipment
+            .values()
+            .find(|d| d.origin == [8, 81, 16])
+            .unwrap()
+            .clone();
+        assert_eq!(large.tank_size, Some(size));
+        assert_eq!(large.size(), [4, 6, 4]);
+        assert_eq!(
+            facts(&second.model.lock().await.terrain.equipment[&large.id]),
+            facts(&large)
+        );
+
+        first.teleport([0.5, 81.0, 13.5]).await;
+        second.teleport([1.5, 81.0, 13.5]).await;
+        let report = first.check_assembly(hx, 1).await;
+        let other = second.check_assembly(hx, 1).await;
+        assert_eq!(report.status, AssemblyStatus::Complete);
+        assert_eq!(report, other);
+        assert_eq!(
+            report,
+            server::assembly::inspect(&manager.lock().await.terrain.equipment, hx, 1)
+        );
+
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../target/industry-design-quic")
+            .join(uuid::Uuid::new_v4().to_string())
+            .join("world3d.bin");
+        let restored = {
+            let world = manager.lock().await;
+            world.save(&path).unwrap();
+            let restored = VoxelWorld::load(&path).unwrap();
+            for (&id, expected) in &world.terrain.equipment {
+                assert_eq!(restored.terrain.equipment[&id], facts(expected));
+            }
+            assert_eq!(restored.industry_ledger(), world.industry_ledger());
+            assert_eq!(
+                server::assembly::inspect(&restored.terrain.equipment, hx, 1).status,
+                AssemblyStatus::Complete
+            );
+            restored
+        };
+        let pointer = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../target/industry-design-fixture-path.txt");
+        std::fs::write(pointer, path.to_string_lossy().replace('\\', "/")).unwrap();
+        println!("INDUSTRY_DESIGN_FIXTURE={}", path.display());
+
+        // A physical edit invalidates both subscribers; a fresh request diagnoses the missing line.
+        first.teleport([-1.5, 81.0, 13.5]).await;
+        let valve = first.model.lock().await.terrain.equipment[&ids[&(-2, 16)]].clone();
+        let (yaw, pitch) = first.point_at(&valve).await;
+        let inventory_revision = first.model.lock().await.inventory.revision;
+        first
+            .send(ClientMessage::Equipment(EquipmentCommand::Remove {
+                id: valve.id,
+                revision: valve.revision,
+                yaw,
+                pitch,
+                inventory_revision,
+            }))
+            .await;
+        first
+            .wait(|m| {
+                !m.terrain.equipment.contains_key(&valve.id)
+                    && m.assembly_reply
+                        .as_ref()
+                        .is_some_and(|r| r.status == AssemblyStatus::Stale)
+            })
+            .await;
+        second
+            .wait(|m| {
+                m.assembly_reply
+                    .as_ref()
+                    .is_some_and(|r| r.status == AssemblyStatus::Stale)
+            })
+            .await;
+        first.teleport([0.5, 81.0, 13.5]).await;
+        let broken = first.check_assembly(hx, 2).await;
+        assert_eq!(broken.status, AssemblyStatus::Incomplete);
+        assert!(!broken.lines[0].valid);
+        drop(first);
+        drop(second);
+        let _ = stop.send(());
+        server.await.unwrap().unwrap();
+
+        // Restore into a new authority and read the same specification over a new QUIC session.
+        let (endpoint, cert) = make_server_endpoint("127.0.0.1:0".parse().unwrap()).unwrap();
+        let address = endpoint.local_addr().unwrap();
+        let (stop, stopped) = oneshot::channel();
+        let server = tokio::spawn(serve_endpoint(
+            endpoint,
+            Arc::new(Mutex::new(restored)),
+            async {
+                let _ = stopped.await;
+            },
+        ));
+        let reopened = Peer::connect(address, cert, 97).await;
+        reopened
+            .wait(|m| m.terrain.equipment.contains_key(&large.id))
+            .await;
+        assert_eq!(
+            facts(&reopened.model.lock().await.terrain.equipment[&large.id]),
+            facts(&large)
+        );
+        assert!(reopened.model.lock().await.assembly_reply.is_none());
+        drop(reopened);
+        let _ = stop.send(());
+        server.await.unwrap().unwrap();
+    })
+    .await
+    .expect("industrial parameterized build and assembly scenario timed out");
 }
 
 #[tokio::test]
