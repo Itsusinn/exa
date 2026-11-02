@@ -25,6 +25,7 @@ pub struct Session {
     pub generation: u64,
     pub equipment_axis: u8,
     pub tank_size: TankSize,
+    pub column_design: Option<ColumnDesign>,
     pub assembly_report: Option<AssemblyReport>,
     pub assembly_pending: bool,
     assembly_request: u64,
@@ -64,6 +65,7 @@ impl Default for Session {
             generation: 0,
             equipment_axis: 0,
             tank_size: TankSize::default(),
+            column_design: None,
             assembly_report: None,
             assembly_pending: false,
             assembly_request: 0,
@@ -157,6 +159,7 @@ impl Session {
         self.demo = false;
         self.equipment_axis = 0;
         self.tank_size = TankSize::default();
+        self.column_design = None;
         self.clear_assembly();
         self.assembly_request = 0;
         self.clear_distillation();
@@ -684,6 +687,13 @@ impl Session {
         .map(|hit| hit.position)
     }
     pub fn edit_block(&mut self, yaw: f32, pitch: f32, place: bool) {
+        if place
+            && self.selected_equipment() == Some(EquipmentKind::Column)
+            && self.column_design.is_none()
+        {
+            self.model.container_error = "请按 J 准备塔体设计并用于建造。".into();
+            return;
+        }
         if !self.model.ready || self.demo {
             return;
         }
@@ -693,6 +703,9 @@ impl Session {
             let command = if place {
                 self.selected_equipment()
                     .map(|kind| EquipmentCommand::Place {
+                        column_design: (kind == EquipmentKind::Column)
+                            .then(|| self.column_design.clone())
+                            .flatten(),
                         target: hit.position,
                         yaw,
                         pitch,
@@ -801,6 +814,9 @@ impl Session {
             return None;
         }
         let kind = self.selected_equipment()?;
+        if kind == EquipmentKind::Column && self.column_design.is_none() {
+            return None;
+        }
         let hit = equipment::target(&self.model.terrain, self.model.body.position, yaw, pitch)?;
         let device = EquipmentSnapshot {
             id: 1,
@@ -808,7 +824,15 @@ impl Session {
             kind,
             tank_size: matches!(kind, EquipmentKind::Tank | EquipmentKind::Vessel)
                 .then_some(self.tank_size),
-            origin: equipment::placement_origin_sized(hit, kind, Some(self.tank_size)),
+            column_design: (kind == EquipmentKind::Column)
+                .then(|| self.column_design.clone())
+                .flatten(),
+            origin: equipment::placement_origin_configured(
+                hit,
+                kind,
+                Some(self.tank_size),
+                self.column_design.as_ref(),
+            ),
             axis: if kind == EquipmentKind::PipeRack {
                 if self.equipment_axis == 2 {
                     2
@@ -1062,6 +1086,7 @@ mod pipe_tests {
     #[test]
     fn assembly_replies_ignore_closed_panels_old_requests_and_other_masters() {
         let report = |request_id, master_id, status| AssemblyReport {
+            master_kind: EquipmentKind::HeatExchanger,
             request_id,
             master_id,
             status,

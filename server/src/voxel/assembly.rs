@@ -37,12 +37,15 @@ impl VoxelWorld {
             anyhow::ensure!(self.tick >= p.assembly_after, "检查过快，请稍后重试。");
             let hit =
                 game_simulation::equipment::target(&self.terrain, p.body.position, yaw, pitch)
-                    .context("换热器太远或被遮挡。");
-            anyhow::ensure!(hit?.equipment == Some(id), "请瞄准要检查的换热器。");
+                    .context("设备太远或被遮挡。");
+            anyhow::ensure!(hit?.equipment == Some(id), "请瞄准要检查的设备。");
             let master = self.terrain.equipment.get(&id).context("设备已被拆除。");
             let master = master?;
             anyhow::ensure!(
-                master.kind == EquipmentKind::HeatExchanger && master.revision == revision,
+                matches!(
+                    master.kind,
+                    EquipmentKind::HeatExchanger | EquipmentKind::Column
+                ) && master.revision == revision,
                 "设备类型或版本已变化。"
             );
             Ok(())
@@ -52,6 +55,14 @@ impl VoxelWorld {
             Err(error) => AssemblyReport {
                 request_id,
                 master_id: id,
+                master_kind: self
+                    .terrain
+                    .equipment
+                    .get(&id)
+                    .filter(|d| {
+                        matches!(d.kind, EquipmentKind::HeatExchanger | EquipmentKind::Column)
+                    })
+                    .map_or(EquipmentKind::HeatExchanger, |d| d.kind),
                 status: AssemblyStatus::Rejected,
                 lines: vec![],
                 message: error.to_string(),

@@ -47,6 +47,9 @@ fn volume(device: &EquipmentSnapshot) -> f64 {
     water_moles(device) * WATER_MOLAR_MASS_KG / WATER_DENSITY_KG_M3
 }
 fn potential(device: &EquipmentSnapshot) -> f64 {
+    if device.kind == EquipmentKind::Column {
+        return 0.0;
+    }
     if device.kind == EquipmentKind::Vessel {
         // Lumped sealed-vessel model: fixed geometric centre of mass. The legacy
         // open-water model retains its level-dependent gravitational energy.
@@ -353,6 +356,7 @@ mod tests {
             pump_reversed: false,
             pipe_ends: None,
             tank_size: None,
+            column_design: None,
             thermal: None,
             reading: None,
         }

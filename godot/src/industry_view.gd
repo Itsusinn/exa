@@ -13,6 +13,7 @@ var preview: MeshInstance3D
 var preview_material: StandardMaterial3D
 var metal: StandardMaterial3D
 var panel: PanelContainer
+var panel_close: Button
 var details: Label
 var selected_id := 0
 var opened := false
@@ -48,6 +49,8 @@ var build_height: SpinBox
 var build_title: Label
 var build_capacity: Label
 var build_apply: Button
+var build_import: Button
+var build_note: Label
 var assembly_button: Button
 var assembly_facts: Label
 var assembly_started := 0
@@ -153,6 +156,7 @@ func _ready() -> void:
 	feedback.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	column.add_child(feedback)
 	var close := Button.new()
+	panel_close = close
 	close.text = "关闭  ·  Esc"
 	close.pressed.connect(func(): close_requested.emit())
 	column.add_child(close)
@@ -176,15 +180,26 @@ func _ready() -> void:
 	build_column.add_child(build_capacity)
 	build_diameter.value_changed.connect(func(_value): _update_build_capacity())
 	build_height.value_changed.connect(func(_value): _update_build_capacity())
-	var build_note := Label.new()
+	build_note = Label.new()
 	build_note.text = "每台消耗 1 件测试设备\n建成后尺寸固定；喷嘴位于底部两侧。"
 	build_column.add_child(build_note)
 	build_apply = Button.new()
 	build_apply.text = "应用并预览"
 	build_apply.pressed.connect(func():
+		if host_view.bridge.column_selected():
+			if not host_view.bridge.column_build_design().is_empty(): close_requested.emit()
+			return
 		if host_view.bridge.set_tank_build_spec(int(build_diameter.value),int(build_height.value)):
 			close_requested.emit())
 	build_column.add_child(build_apply)
+	build_import = Button.new()
+	build_import.text = "导入已保存塔体设计"
+	build_import.pressed.connect(func():
+		host_view.distillation.host_view = host_view
+		var design: Dictionary = host_view.distillation.read_saved_design()
+		if not design.is_empty() and host_view.bridge.use_column_design(design): _update_build_capacity()
+		else: build_capacity.text = "导入失败，现有建造设计保留。")
+	build_column.add_child(build_import)
 	var build_cancel := Button.new()
 	build_cancel.text = "取消 · Esc"
 	build_cancel.pressed.connect(func(): close_requested.emit())
@@ -208,26 +223,42 @@ func _build_number(column: VBoxContainer, title: String, minimum: int, maximum: 
 
 func show_build(host: Node3D) -> bool:
 	var spec: Dictionary = host.bridge.tank_build_spec()
-	if spec.is_empty(): return false
+	var column: bool = host.bridge.column_selected()
+	if spec.is_empty() and not column: return false
 	close()
 	host_view = host
 	build_opened = true
-	build_title.text = "%s · 建造规格" % spec.name
-	build_diameter.value = spec.diameter
-	build_height.value = spec.height
+	build_title.text = "蒸馏塔 · 已冻结设计" if column else "%s · 建造规格" % spec.name
+	build_diameter.get_parent().visible = not column
+	build_height.get_parent().visible = not column
+	build_import.visible = column
+	build_note.text = "每台消耗 1 件测试设备；建成后固定。\n塔体暂不运行；三口只作外部接管检查。" if column else "每台消耗 1 件测试设备\n建成后尺寸固定；喷嘴位于底部两侧。"
+	if not column:
+		build_diameter.value = spec.diameter
+		build_height.value = spec.height
 	_update_build_capacity()
 	build_panel.show()
 	return true
 
 func _update_build_capacity() -> void:
 	if is_instance_valid(host_view):
+		if host_view.bridge.column_selected():
+			var design: Dictionary = host_view.bridge.column_build_design()
+			build_apply.disabled = design.is_empty()
+			build_capacity.text = "请按 J 准备并用于建造，或导入保存设计。" if design.is_empty() else "直径 %d m · 高度 %d m\n%d 板 · 进料板 %d\n仅结构参数，非热工认证。" % [design.diameter,design.spec.trays+2,design.spec.trays,design.spec.feed_tray]
+			return
+		build_apply.disabled = false
 		build_capacity.text = "有效容量  %.1f L" % (host_view.bridge.tank_build_capacity(int(build_diameter.value),int(build_height.value))*1000)
 
-func shape_mesh(host: Node3D, kind: int, axis: int, pipe_ends: Array = [], diameter: int = 2, height: int = 3) -> ArrayMesh:
-	var key := "%d:%d:%s:%d:%d" % [kind,axis,str(pipe_ends),diameter,height]
+func column_shape_key(design: Dictionary) -> String:
+	return "" if design.is_empty() else "%d:%d:%d" % [design.diameter,design.spec.trays,design.spec.feed_tray]
+
+func shape_mesh(host: Node3D, kind: int, axis: int, pipe_ends: Array = [], diameter: int = 2, height: int = 3, column_design: Dictionary = {}) -> ArrayMesh:
+	var key := "%d:%d:%s:%d:%d:%s" % [kind,axis,str(pipe_ends),diameter,height,column_shape_key(column_design)]
 	if not meshes.has(key):
 		var data: Dictionary = host.bridge.pipe_geometry(axis,pipe_ends[0],pipe_ends[1]) if kind == 1 and pipe_ends.size() == 2 else host.bridge.equipment_geometry(kind,axis)
 		if kind in [0,4]: data = host.bridge.tank_geometry(kind,diameter,height)
+		if kind == 7: data = host.bridge.column_geometry(column_design)
 		var mesh: ArrayMesh = host._mesh(data)
 		if mesh.get_surface_count() > 0: mesh.surface_set_material(0,metal)
 		meshes[key] = mesh
@@ -248,9 +279,9 @@ func update_view(host: Node3D) -> void:
 				node.gi_mode = GeometryInstance3D.GI_MODE_STATIC
 				add_child(node)
 				nodes[device.id] = node
-			var shape_key := "%d:%d:%s:%d:%d" % [device.kind,device.axis,str(device.get("pipe_ends",[])),device.get("diameter",2),device.get("height",3)]
+			var shape_key := "%d:%d:%s:%d:%d:%s" % [device.kind,device.axis,str(device.get("pipe_ends",[])),device.get("diameter",2),device.get("height",3),column_shape_key(device.get("column_design",{}))]
 			if node.get_meta("shape","") != shape_key:
-				node.mesh = shape_mesh(host,device.kind,device.axis,device.get("pipe_ends",[]),device.get("diameter",2),device.get("height",3))
+				node.mesh = shape_mesh(host,device.kind,device.axis,device.get("pipe_ends",[]),device.get("diameter",2),device.get("height",3),device.get("column_design",{}))
 				node.set_meta("shape",shape_key)
 			if node.position != Vector3(device.origin): node.position = Vector3(device.origin)
 			if device.kind == 2:
@@ -282,13 +313,13 @@ func update_view(host: Node3D) -> void:
 				feedback.text = "未确认更改，请查看状态后重试"
 			if not host.state.container_error.is_empty(): feedback.text = host.state.container_error
 			_describe(records[selected_id])
-	if build_opened and (not host.state.get("ready",false) or host.state.get("hp",0) <= 0 or host.bridge.tank_build_spec().is_empty()): close_requested.emit()
+	if build_opened and (not host.state.get("ready",false) or host.state.get("hp",0) <= 0 or (host.bridge.tank_build_spec().is_empty() and not host.bridge.column_selected())): close_requested.emit()
 	_update_route(host)
 	placement = host.bridge.equipment_preview(host.yaw,host.pitch) if host.captured and not opened and not route_state.get("active",false) else {}
 	preview.visible = not placement.is_empty()
 	preview_arrow.visible = preview.visible and placement.get("kind",-1) == 2
 	if preview.visible:
-		preview.mesh = shape_mesh(host,placement.kind,placement.axis,[],placement.get("diameter",2),placement.get("height",3))
+		preview.mesh = shape_mesh(host,placement.kind,placement.axis,[],placement.get("diameter",2),placement.get("height",3),placement.get("column_design",{}))
 		preview.position = Vector3(placement.origin)
 		preview_material.albedo_color = Color(0.4,0.85,0.55,0.32) if placement.valid else Color(0.95,0.3,0.25,0.32)
 		if preview_arrow.visible: _set_arrow(preview_arrow,placement.axis,placement.get("pump_reversed",false))
@@ -367,6 +398,12 @@ func show_device(device: Dictionary) -> void:
 
 func _describe(device: Dictionary) -> void:
 	var lines := PackedStringArray(["%s  #%d" % [device.name,device.id], "位置  %s" % device.origin])
+	if device.kind == 7:
+		var design: Dictionary = device.column_design
+		var spec: Dictionary = design.spec
+		lines.append("直径 %d m · 高度 %d m · %d 板 · 进料板 %d" % [design.diameter,spec.trays+2,spec.trays,spec.feed_tray])
+		lines.append("设计进料 %.3f mol/s · 丁烷 %.3f · %.2f K · %.1f kPa\n回流比 %.3f · 馏出比例 %.3f" % [spec.feed_mol_s,spec.butane_fraction,spec.feed_temperature_k,spec.pressure_pa/1000.0,spec.reflux_ratio,spec.distillate_fraction])
+		lines.append("未运行 · 仅保存结构参数，未绑定数值审计\n0 进料（−X） / 1 塔顶产品（+X） / 2 塔底产品（+X）\n接管检查不代表完整冷凝、回流、再沸装置或热工合格。")
 	if device.kind in [0,4]: lines.append("直径 %d m · 高度 %d m · 有效容量 %.1f L" % [device.diameter,device.height,device.design_capacity_m3*1000])
 	if device.kind == 1 and device.get("pipe_ends",[]).size() == 2:
 		var faces := ["−X","+X","−Y","+Y","−Z","+Z"]
@@ -389,7 +426,7 @@ func _describe(device: Dictionary) -> void:
 				lines.append("液量  %.1f / %.1f L" % [reading.volume_m3*1000,reading.capacity_m3*1000])
 			# A heat exchanger has two independent passages, not one aggregate stream.
 			# Its temperatures and signed flows are presented per side below.
-			if device.kind != 5:
+			if device.kind not in [5,7]:
 				lines.append("绝对压力  %s · %s %+.3f L/s" % ["未计算" if reading.pressure_pa == null else "%.2f kPa" % (reading.pressure_pa/1000),"净流入" if device.kind in [0,4] else "流量",reading.flow_m3_s*1000])
 				if reading.temperature_k != null: lines.append("温度  %.2f K / %.1f °C" % [reading.temperature_k,reading.temperature_k-273.15])
 				else: lines.append("温度  未计算")
@@ -412,14 +449,15 @@ func _describe(device: Dictionary) -> void:
 		valve_buttons[index].disabled = pending_revision >= 0 or is_equal_approx(device.opening,index*0.25)
 	thermal_apply.disabled = pending_revision >= 0
 	thermal_reload.disabled = pending_revision >= 0
-	assembly_button.visible = device.kind == 5
-	assembly_facts.visible = device.kind == 5
-	if device.kind == 5: _describe_assembly()
+	assembly_button.visible = device.kind in [5,7]
+	assembly_button.text = "检查三罐外部接管" if device.kind == 7 else "检查换热单元结构"
+	assembly_facts.visible = device.kind in [5,7]
+	if device.kind in [5,7]: _describe_assembly()
 
 func _check_assembly() -> void:
 	if not opened or not records.has(selected_id): return
 	var device: Dictionary = records[selected_id]
-	if device.kind != 5: return
+	if device.kind not in [5,7]: return
 	assembly_started = Time.get_ticks_msec()
 	host_view.bridge.check_assembly(selected_id,device.revision,host_view.yaw,host_view.pitch)
 	_describe_assembly()
@@ -431,6 +469,9 @@ func _describe_assembly() -> void:
 		assembly_facts.text = "等待结构检查…" if assembly_button.disabled else "尚未收到检查结果，可重新检查。"
 		return
 	if report.get("master_id",0) != selected_id:
+		if records[selected_id].kind == 7:
+			assembly_facts.text = "三个独立密闭罐：进料线一泵一阀，两产品线各一阀。\n仅检查外部连接；塔体暂不运行。"
+			return
 		assembly_facts.text = "模板：两侧各有独立进出罐；每条进料线有一泵一阀。\n仅检查连接与部件，设备运行不受此检查限制。"
 		return
 	var display_key := "%s:%s" % [report.request_id,report.status]
@@ -440,7 +481,7 @@ func _describe_assembly() -> void:
 	var statuses := {"complete":"结构完整","incomplete":"结构不完整","stale":"结构已变化，请重新检查","rejected":"检查未执行"}
 	var lines := PackedStringArray([statuses.get(report.status,report.status),report.message])
 	for line in report.get("lines",[]):
-		var label: String = ["A 进料","A 出料","B 进料","B 出料"][line.port]
+		var label: String = (["进料","塔顶产品","塔底产品"] if records[selected_id].kind == 7 else ["A 进料","A 出料","B 进料","B 出料"])[line.port]
 		lines.append("%s：%s" % [label,line.message])
 		var parts := PackedStringArray()
 		for part in [["tank_id","罐"],["pump_id","泵"],["valve_id","阀"]]:

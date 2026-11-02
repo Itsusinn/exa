@@ -140,6 +140,14 @@ godot-distillation:
 godot-distillation-graphics:
     cargo +nightly -Zscript scripts/godot.rs distillation-graphics
 
+# 验证蒸馏设计导入、塔体建造和三罐外部接管
+godot-column:
+    cargo +nightly -Zscript scripts/godot.rs column
+
+# 实际图形窗口验收参数化塔体和设计面板
+godot-column-graphics:
+    cargo +nightly -Zscript scripts/godot.rs column-graphics
+
 # 真实 QUIC 探索后在图形窗口验证负坐标区块加载、卸载与保存
 godot-streaming:
     cargo +nightly -Zscript scripts/godot.rs streaming

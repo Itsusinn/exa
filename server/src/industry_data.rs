@@ -6,8 +6,8 @@ use protocol::{EquipmentKind, EquipmentSnapshot, MaterialAmount, AIR, MAX_EQUIPM
 use rkyv::{rancor::Error, Archive, Deserialize, Serialize};
 use std::{collections::BTreeMap, path::Path};
 
-pub const DATA_VERSION: u32 = 5;
-const MAGIC: &[u8; 8] = b"DNGIND05";
+pub const DATA_VERSION: u32 = 6;
+const MAGIC: &[u8; 8] = b"DNGIND06";
 
 /// External transfers are explicit; energy includes the fluid's gravitational energy.
 #[derive(Archive, Serialize, Deserialize, Debug, Clone, Default, PartialEq)]
@@ -66,6 +66,8 @@ pub struct EquipmentData {
     pub thermal: Option<ThermalData>,
     pub pipe_ends: Option<[u8; 2]>,
     pub tank_size: Option<[u8; 2]>,
+    /// Bounded MessagePack design facts; numerical results are never archived.
+    pub column_design: Option<Vec<u8>>,
 }
 #[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct ThermalData {
@@ -112,6 +114,7 @@ impl EquipmentData {
                 EquipmentKind::Vessel => "game:vessel",
                 EquipmentKind::HeatExchanger => "game:heat_exchanger",
                 EquipmentKind::PipeRack => "game:pipe_rack",
+                EquipmentKind::Column => "game:column",
             }
             .into(),
             origin: value.origin,
@@ -131,6 +134,10 @@ impl EquipmentData {
             thermal: value.thermal.as_ref().map(ThermalData::capture),
             pipe_ends: value.pipe_ends,
             tank_size: value.tank_size.map(|s| [s.diameter, s.height]),
+            column_design: value
+                .column_design
+                .as_ref()
+                .map(|d| rmp_serde::to_vec(d).expect("serializable column design")),
         }
     }
     fn restore(&self) -> Result<EquipmentSnapshot> {
@@ -142,6 +149,7 @@ impl EquipmentData {
             "game:vessel" => EquipmentKind::Vessel,
             "game:heat_exchanger" => EquipmentKind::HeatExchanger,
             "game:pipe_rack" => EquipmentKind::PipeRack,
+            "game:column" => EquipmentKind::Column,
             _ => anyhow::bail!("unknown saved equipment kind"),
         };
         let value = EquipmentSnapshot {
@@ -168,6 +176,14 @@ impl EquipmentData {
                 .map(ThermalData::restore)
                 .transpose()?,
             reading: None,
+            column_design: self
+                .column_design
+                .as_ref()
+                .map(|bytes| -> Result<protocol::ColumnDesign> {
+                    anyhow::ensure!(bytes.len() <= 1024, "oversized column design");
+                    Ok(rmp_serde::from_slice(bytes)?)
+                })
+                .transpose()?,
             pipe_ends: self.pipe_ends,
             tank_size: self
                 .tank_size
@@ -282,6 +298,122 @@ pub fn read(path: &Path) -> Result<IndustryArchive> {
     rkyv::from_bytes::<IndustryArchive, Error>(mapped.payload()).context("decode industry archive")
 }
 
+// Exact version-five layout, before column designs were appended.
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq)]
+struct V5Equipment {
+    pub id: u64,
+    pub revision: u64,
+    /// Stable name; never the enum ordinal or a scene/ECS handle.
+    pub kind: String,
+    pub origin: [i32; 3],
+    pub axis: u8,
+    pub contents: Vec<Component>,
+    pub internal_energy_j: f64,
+    pub enabled: bool,
+    pub opening: f64,
+    pub pump_reversed: bool,
+    pub thermal: Option<ThermalData>,
+    pub pipe_ends: Option<[u8; 2]>,
+    pub tank_size: Option<[u8; 2]>,
+}
+#[derive(Archive, Serialize, Deserialize)]
+struct V5Archive {
+    data_version: u32,
+    thermo_revision: String,
+    generation: String,
+    seed: u64,
+    last_update: u64,
+    revision: u64,
+    next_id: u64,
+    equipment: Vec<V5Equipment>,
+    ledger: ExchangeLedger,
+}
+pub fn read_v5(path: &Path) -> Result<IndustryArchive> {
+    let mapped = MappedArchive::open(path, b"DNGIND05")?;
+    let old = rkyv::from_bytes::<V5Archive, Error>(mapped.payload())
+        .context("decode stage-four industry archive")?;
+    anyhow::ensure!(
+        old.data_version == 5,
+        "unsupported version-five industry archive"
+    );
+    anyhow::ensure!(
+        old.equipment.iter().all(|e| matches!(
+            e.kind.as_str(),
+            "game:tank"
+                | "game:pipe"
+                | "game:pump"
+                | "game:valve"
+                | "game:vessel"
+                | "game:heat_exchanger"
+                | "game:pipe_rack"
+        )),
+        "unknown version-five equipment kind"
+    );
+    Ok(IndustryArchive {
+        data_version: DATA_VERSION,
+        thermo_revision: old.thermo_revision,
+        generation: old.generation,
+        seed: old.seed,
+        last_update: old.last_update,
+        revision: old.revision,
+        next_id: old.next_id,
+        ledger: old.ledger,
+        equipment: old
+            .equipment
+            .into_iter()
+            .map(|e| EquipmentData {
+                id: e.id,
+                revision: e.revision,
+                kind: e.kind,
+                origin: e.origin,
+                axis: e.axis,
+                contents: e.contents,
+                internal_energy_j: e.internal_energy_j,
+                enabled: e.enabled,
+                opening: e.opening,
+                pump_reversed: e.pump_reversed,
+                thermal: e.thermal,
+                pipe_ends: e.pipe_ends,
+                tank_size: e.tank_size,
+                column_design: None,
+            })
+            .collect(),
+    })
+}
+#[cfg(test)]
+pub(crate) fn write_v5_fixture(path: &Path, a: &IndustryArchive) -> Result<()> {
+    let old = V5Archive {
+        data_version: 5,
+        thermo_revision: a.thermo_revision.clone(),
+        generation: a.generation.clone(),
+        seed: a.seed,
+        last_update: a.last_update,
+        revision: a.revision,
+        next_id: a.next_id,
+        ledger: a.ledger.clone(),
+        equipment: a
+            .equipment
+            .iter()
+            .map(|e| V5Equipment {
+                id: e.id,
+                revision: e.revision,
+                kind: e.kind.clone(),
+                origin: e.origin,
+                axis: e.axis,
+                contents: e.contents.clone(),
+                internal_energy_j: e.internal_energy_j,
+                enabled: e.enabled,
+                opening: e.opening,
+                pump_reversed: e.pump_reversed,
+                thermal: e.thermal.clone(),
+                pipe_ends: e.pipe_ends,
+                tank_size: e.tank_size,
+            })
+            .collect(),
+    };
+    archive_io::write_new(path, b"DNGIND05", &rkyv::to_bytes::<Error>(&old)?)
+}
+
 // Exact version-four layout, before parameterized tank sizes were appended.
 #[derive(Archive, Serialize, Deserialize)]
 struct V4Equipment {
@@ -357,6 +489,7 @@ pub fn read_v4(path: &Path) -> Result<IndustryArchive> {
                 thermal: e.thermal,
                 pipe_ends: e.pipe_ends,
                 tank_size: None,
+                column_design: None,
             })
             .collect(),
     })
@@ -467,6 +600,7 @@ pub fn read_v3(path: &Path) -> Result<IndustryArchive> {
                 thermal: e.thermal,
                 pipe_ends: None,
                 tank_size: None,
+                column_design: None,
             })
             .collect(),
     })
@@ -573,6 +707,7 @@ pub fn read_v2(path: &Path) -> Result<IndustryArchive> {
                 thermal: None,
                 pipe_ends: None,
                 tank_size: None,
+                column_design: None,
             })
             .collect(),
         ledger: ExchangeLedger {
@@ -679,6 +814,7 @@ pub fn read_legacy(path: &Path) -> Result<IndustryArchive> {
                 thermal: None,
                 pipe_ends: None,
                 tank_size: None,
+                column_design: None,
             })
             .collect(),
     })

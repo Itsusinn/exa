@@ -42,6 +42,8 @@ const ACTIONS: &[&str] = &[
     "industry-design-graphics",
     "distillation",
     "distillation-graphics",
+    "column",
+    "column-graphics",
     "streaming",
     "commands",
     "streaming-perf",
@@ -167,6 +169,14 @@ fn execute() -> Result {
                 ),
                 "distillation" => ("distillation", true, None),
                 "distillation-graphics" => ("distillation", false, None),
+                "column" | "column-graphics" => (
+                    "column",
+                    action == "column",
+                    Some((
+                        "client",
+                        "column_construction_and_external_connections_emit_graphics_fixture",
+                    )),
+                ),
                 "containers" => (
                     "containers",
                     true,
@@ -198,7 +208,14 @@ fn execute() -> Result {
                 let mut command = cargo(&repo);
                 command.args(["test", "-p", package, "--jobs", "2"]);
                 if package == "client" {
-                    command.args(["--test", "industry"]);
+                    command.args([
+                        "--test",
+                        if test == "column" {
+                            "column"
+                        } else {
+                            "industry"
+                        },
+                    ]);
                 }
                 run(command.arg(filter))?;
             }

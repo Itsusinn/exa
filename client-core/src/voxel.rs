@@ -268,6 +268,7 @@ mod tests {
             thermal: None,
             pipe_ends: None,
             tank_size: None,
+            column_design: None,
             reading: None,
         };
         m.apply(ServerMessage::EquipmentState {
@@ -324,6 +325,7 @@ mod tests {
             thermal: None,
             pipe_ends: None,
             tank_size: None,
+            column_design: None,
             reading: None,
         };
         m.apply(ServerMessage::EquipmentState {

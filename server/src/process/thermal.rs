@@ -126,7 +126,9 @@ pub fn solve(input: &[EquipmentSnapshot], dt: f64) -> Result<FlowStep, String> {
         }
         group.sort_unstable();
         let batch: Vec<_> = group.iter().map(|&i| devices[i].clone()).collect();
-        let result = if batch
+        let result = if batch.iter().any(|d| d.kind == EquipmentKind::Column) {
+            Err("蒸馏塔尚未运行，仅支持外部接管检查".into())
+        } else if batch
             .iter()
             .any(|d| matches!(d.kind, EquipmentKind::Vessel | EquipmentKind::HeatExchanger))
         {
@@ -740,6 +742,7 @@ mod tests {
             pump_reversed: false,
             pipe_ends: None,
             tank_size: None,
+            column_design: None,
             thermal: (kind == EquipmentKind::HeatExchanger)
                 .then(protocol::ThermalSettings::default),
             reading: None,
@@ -764,6 +767,33 @@ mod tests {
         }
         ds[3].thermal.as_mut().unwrap().mode = HeatControlMode::Manual;
         ds
+    }
+    #[test]
+    fn column_connected_group_preserves_facts_while_other_group_runs() {
+        let mut ds = water_exchanger();
+        let mut column = device(100, EquipmentKind::Column, [20, 10, 0]);
+        column.column_design = Some(protocol::ColumnDesign::default());
+        let mut vessel = device(101, EquipmentKind::Vessel, [18, 14, 0]);
+        charge(&mut vessel, [1000.0, 1000.0], 320.0).unwrap();
+        assert!(game_simulation::equipment::connected(
+            ports(&vessel)[1],
+            ports(&column)[0]
+        ));
+        ds.extend([column.clone(), vessel.clone()]);
+        let before = ds[0].contents.clone();
+        let step = solve(&ds, 0.2).unwrap();
+        assert_ne!(step.devices[0].contents, before);
+        for original in [column, vessel] {
+            let current = step.devices.iter().find(|d| d.id == original.id).unwrap();
+            assert_eq!(current.contents, original.contents);
+            assert_eq!(current.internal_energy_j, original.internal_energy_j);
+            assert!(current
+                .reading
+                .as_ref()
+                .unwrap()
+                .status
+                .contains("蒸馏塔尚未运行"));
+        }
     }
     #[test]
     fn sized_sealed_vessel_uses_its_volume_and_centroid() {

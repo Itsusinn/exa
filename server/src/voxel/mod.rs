@@ -569,7 +569,7 @@ impl VoxelWorld {
         anyhow::ensure!(bytes.starts_with(b"DNG3D001"),"not a 3D save; legacy 2D saves are preserved and require explicit migration. Use a new CDDA_SAVE_PATH");
         let saved: Save = rmp_serde::from_slice(&bytes[8..]).context("decode 3D world")?;
         anyhow::ensure!(
-            matches!(saved.version, 1..=12)
+            matches!(saved.version, 1..=13)
                 && saved.size
                     == if saved.version >= 7 {
                         [0, WORLD_HEIGHT, 0]
@@ -652,7 +652,7 @@ impl VoxelWorld {
                 );
                 world.load_industry_checkpoint(path, &generation, saved.version)?;
             }
-            if saved.version < 12 {
+            if saved.version < 13 {
                 containers::backup_version(path, &bytes, saved.version)?;
             }
             return Ok(world);
@@ -713,7 +713,7 @@ impl VoxelWorld {
         self.write_entity_checkpoint(path, &player_archive)?;
         self.write_industry_checkpoint(path, &player_archive)?;
         let saved = Save {
-            version: 12,
+            version: 13,
             size: [0, WORLD_HEIGHT, 0],
             generated_columns: Some(self.terrain.columns().into_iter().collect()),
             seed: self.world_seed,

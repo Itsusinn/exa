@@ -1,4 +1,4 @@
-//! Bounded, request-only structural inspection of a four-reservoir heat unit.
+//! Bounded, request-only inspection of heat units and column external connections.
 //! This is a construction report, never a condition for process execution.
 use game_simulation::equipment::{connected, ports, EquipmentPort};
 use protocol::{
@@ -8,7 +8,7 @@ use protocol::{
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Only built structure affects report validity; running material/control readings do not.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Structure {
     id: u64,
     kind: EquipmentKind,
@@ -17,6 +17,7 @@ pub struct Structure {
     ends: Option<[u8; 2]>,
     size: Option<TankSize>,
     reversed: bool,
+    design: Option<protocol::ColumnDesign>,
 }
 pub fn structure(devices: &BTreeMap<u64, EquipmentSnapshot>) -> Vec<Structure> {
     devices
@@ -29,6 +30,7 @@ pub fn structure(devices: &BTreeMap<u64, EquipmentSnapshot>) -> Vec<Structure> {
             axis: d.axis,
             ends: d.pipe_ends,
             size: d.tank_size,
+            design: d.column_design.clone(),
             reversed: d.kind == EquipmentKind::Pump && d.pump_reversed,
         })
         .collect()
@@ -46,16 +48,21 @@ pub fn inspect(
     let mut report = AssemblyReport {
         request_id,
         master_id,
+        master_kind: devices
+            .get(&master_id)
+            .filter(|d| matches!(d.kind, EquipmentKind::HeatExchanger | EquipmentKind::Column))
+            .map_or(EquipmentKind::HeatExchanger, |d| d.kind),
         status: AssemblyStatus::Rejected,
         lines: vec![],
-        message: "请选择双流换热器。".into(),
+        message: "请选择双流换热器或蒸馏塔。".into(),
     };
     let Some(master) = devices
         .get(&master_id)
-        .filter(|d| d.kind == EquipmentKind::HeatExchanger)
+        .filter(|d| matches!(d.kind, EquipmentKind::HeatExchanger | EquipmentKind::Column))
     else {
         return report;
     };
+    let column = master.kind == EquipmentKind::Column;
     if devices.len() > MAX_EQUIPMENT {
         report.message = "设备数量超过检查上限。".into();
         return report;
@@ -78,7 +85,11 @@ pub fn inspect(
         };
         let mut current = (master_id, start);
         let mut visited = BTreeSet::from([master_id]);
-        let inlet = start.id % 2 == 0;
+        let inlet = if column {
+            start.id == 0
+        } else {
+            start.id % 2 == 0
+        };
         let mut faults = Vec::new();
         for _ in 0..MAX_EQUIPMENT {
             let next: Vec<_> = index
@@ -107,6 +118,9 @@ pub fn inspect(
             let device = &devices[&id];
             match device.kind {
                 EquipmentKind::Tank | EquipmentKind::Vessel => {
+                    if column && device.kind != EquipmentKind::Vessel {
+                        faults.push("蒸馏塔外部连接需要密闭罐");
+                    }
                     line.tank_id = Some(id);
                     break;
                 }
@@ -150,8 +164,12 @@ pub fn inspect(
         if inlet && line.pump_id.is_none() {
             faults.push("进料线缺泵");
         }
-        if inlet && line.valve_id.is_none() {
-            faults.push("进料线缺阀门");
+        if (inlet || column) && line.valve_id.is_none() {
+            faults.push(if inlet {
+                "进料线缺阀门"
+            } else {
+                "产品线缺阀门"
+            });
         }
         faults.sort_unstable();
         faults.dedup();
@@ -176,10 +194,10 @@ pub fn inspect(
                 .any(|(j, line)| j != i && line.tank_id == report.lines[i].tank_id)
         {
             report.lines[i].valid = false;
-            report.lines[i].message = "四条线路必须连接四个独立储罐。".into();
+            report.lines[i].message = "每条线路必须连接独立储罐。".into();
         }
     }
-    for (a, b) in [(0, 1), (2, 3)] {
+    for (a, b) in if column { vec![] } else { vec![(0, 1), (2, 3)] } {
         if let (Some(left), Some(right)) = (report.lines[a].tank_id, report.lines[b].tank_id) {
             if devices[&left].kind != devices[&right].kind {
                 for i in [a, b] {
@@ -189,13 +207,18 @@ pub fn inspect(
             }
         }
     }
-    report.status = if report.lines.len() == 4 && report.lines.iter().all(|l| l.valid) {
+    report.status = if report.lines.len() == (if column { 3 } else { 4 })
+        && report.lines.iter().all(|l| l.valid)
+    {
         AssemblyStatus::Complete
     } else {
         AssemblyStatus::Incomplete
     };
-    report.message =
-        "四罐双流换热单元：A0/B0 为进料，各需一泵一阀；A1/B1 为出料。仅检查结构。".into();
+    report.message = if column {
+        "蒸馏塔三罐外部接管检查；不代表完整冷凝、回流、再沸装置或运行性能。".into()
+    } else {
+        "四罐双流换热单元：A0/B0 为进料，各需一泵一阀；A1/B1 为出料。仅检查结构。".into()
+    };
     report
 }
 
@@ -211,6 +234,7 @@ pub(crate) mod tests {
             axis: 0,
             pipe_ends: None,
             tank_size: None,
+            column_design: None,
             contents: vec![],
             internal_energy_j: 0.0,
             enabled: false,
@@ -255,6 +279,64 @@ pub(crate) mod tests {
         ds.remove(&11);
         ds.insert(12, device(12, EquipmentKind::HeatExchanger, [-3, 1, 0]));
         assert!(inspect(&ds, 1, 5).lines[0].message.contains("不支持"));
+    }
+    #[test]
+    fn column_external_lines_require_three_vessels_valves_and_feed_direction() {
+        let mut column = device(1, EquipmentKind::Column, [0, 10, 0]);
+        let mut design = protocol::ColumnDesign::default();
+        design.spec.trays = 2;
+        design.spec.feed_tray = 1;
+        column.column_design = Some(design);
+        let mut ds = BTreeMap::from([(1, column)]);
+        for (id, kind, origin) in [
+            (10, EquipmentKind::Vessel, [-5, 12, 0]),
+            (11, EquipmentKind::Pump, [-3, 12, 0]),
+            (12, EquipmentKind::Valve, [-2, 12, 0]),
+            (13, EquipmentKind::Pipe, [-1, 12, 0]),
+            (20, EquipmentKind::Valve, [2, 13, 0]),
+            (21, EquipmentKind::Vessel, [3, 13, 0]),
+            (30, EquipmentKind::Valve, [2, 10, 0]),
+            (31, EquipmentKind::Vessel, [3, 10, 0]),
+        ] {
+            ds.insert(id, device(id, kind, origin));
+        }
+        let complete = inspect(&ds, 1, 1);
+        assert!(complete.valid());
+        assert_eq!(complete.status, AssemblyStatus::Complete);
+        assert_eq!(complete.lines.len(), 3);
+
+        ds.get_mut(&20).unwrap().kind = EquipmentKind::Pipe;
+        let report = inspect(&ds, 1, 2);
+        assert_eq!(report.status, AssemblyStatus::Incomplete);
+        assert!(report.lines[1].message.contains("缺阀门"));
+        ds.get_mut(&20).unwrap().kind = EquipmentKind::Valve;
+        ds.get_mut(&11).unwrap().pump_reversed = true;
+        let report = inspect(&ds, 1, 3);
+        assert_eq!(report.status, AssemblyStatus::Incomplete);
+        assert!(report.lines[0].message.contains("方向"));
+        ds.get_mut(&11).unwrap().pump_reversed = false;
+        ds.get_mut(&31).unwrap().kind = EquipmentKind::Tank;
+        let report = inspect(&ds, 1, 4);
+        assert_eq!(report.status, AssemblyStatus::Incomplete);
+        assert!(report.lines[2].message.contains("密闭罐"));
+
+        // Join the two product lines vertically back to the same column.
+        ds.remove(&21);
+        ds.remove(&31);
+        for (id, y, ends) in [
+            (40, 13, [0, 2]),
+            (41, 12, [2, 3]),
+            (42, 11, [2, 3]),
+            (43, 10, [0, 3]),
+        ] {
+            let mut pipe = device(id, EquipmentKind::Pipe, [3, y, 0]);
+            pipe.pipe_ends = Some(ends);
+            ds.insert(id, pipe);
+        }
+        let report = inspect(&ds, 1, 5);
+        assert_eq!(report.status, AssemblyStatus::Incomplete);
+        assert!(report.lines[1].message.contains("回环"));
+        assert!(report.lines[2].message.contains("回环"));
     }
     #[test]
     fn structure_ignores_process_facts_but_tracks_geometry_and_direction() {

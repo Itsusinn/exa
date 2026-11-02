@@ -20,6 +20,7 @@ var draft_loaded := false
 var report_key := ""
 var result_spec: Dictionary = {}
 var last_size := Vector2.ZERO
+var design_notice: Label
 
 func _ready() -> void:
 	layer = 6
@@ -64,6 +65,19 @@ func _ready() -> void:
 	_number("pressure_pa","压力 (kPa)",100,2000,1)
 	_number("reflux_ratio","回流比",0.05,20,0.05)
 	_number("distillate_fraction","馏出量 / 进料量",0.01,0.99,0.01)
+	_number("diameter","建造塔径 (m)",2,6,1)
+	fields.diameter.value = 2
+	var design_buttons := HBoxContainer.new()
+	content.add_child(design_buttons)
+	for entry in [["保存设计",_save_design],["读取保存设计",_load_design],["用于建造",_use_design]]:
+		var button := Button.new()
+		button.text = entry[0]
+		button.pressed.connect(entry[1])
+		design_buttons.add_child(button)
+	design_notice = Label.new()
+	design_notice.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	design_notice.text = "保存结构参数无需计算成功；塔径只决定几何，不代表热工认证。塔体暂不运行。"
+	content.add_child(design_notice)
 	fields.trays.value_changed.connect(func(value): fields.feed_tray.max_value = value)
 	var buttons := HBoxContainer.new()
 	buttons.add_theme_constant_override("separation",12)
@@ -133,6 +147,7 @@ func show_design(host: Node3D) -> bool:
 	if not draft_loaded:
 		var defaults: Dictionary = host.bridge.distillation_defaults()
 		for name in fields:
+			if name == "diameter": continue
 			fields[name].value = defaults[name] / 1000.0 if name == "pressure_pa" else defaults[name]
 		draft_loaded = true
 	opened = true
@@ -244,3 +259,57 @@ func close() -> void:
 func reset() -> void:
 	close()
 	draft_loaded = false
+
+func design_path() -> String:
+	var override := OS.get_environment("CDDA_COLUMN_DESIGN_PATH")
+	return override if not override.is_empty() else "user://column-design.json"
+
+func column_draft() -> Dictionary:
+	return {"diameter":int(fields.diameter.value),"thermo_revision":"butane-pentane-pr78-cp298-r1","spec":draft()}
+
+func _save_design() -> void:
+	var design := column_draft()
+	if not host_view.bridge.validate_column_design(design):
+		design_notice.text = "设计参数无效，未保存。"
+		return
+	var path := design_path()
+	var file := FileAccess.open(path+".tmp",FileAccess.WRITE)
+	if file == null:
+		design_notice.text = "设计文件无法写入。"
+		return
+	file.store_string(JSON.stringify({"schema":1,"design":design}))
+	file.flush()
+	var error := file.get_error()
+	file.close()
+	if error != OK or DirAccess.rename_absolute(ProjectSettings.globalize_path(path+".tmp"),ProjectSettings.globalize_path(path)) != OK:
+		design_notice.text = "保存失败，原设计保留。"
+		return
+	design_notice.text = "已保存结构设计："+ProjectSettings.globalize_path(path)
+
+func read_saved_design() -> Dictionary:
+	var file := FileAccess.open(design_path(),FileAccess.READ)
+	if file == null: return {}
+	if file.get_length() > 65536: return {}
+	var parser := JSON.new()
+	if parser.parse(file.get_as_text()) != OK: return {}
+	var decoded = parser.data
+	if not decoded is Dictionary or decoded.size() != 2 or decoded.get("schema",0) != 1 or not decoded.get("design") is Dictionary: return {}
+	if not host_view.bridge.validate_column_design(decoded.design): return {}
+	return decoded.design
+
+func _load_design() -> void:
+	var design := read_saved_design()
+	if design.is_empty():
+		design_notice.text = "无法读取有效设计；原草稿保留。"
+		return
+	# Update trays first so the feed selector uses the imported range.
+	fields.trays.value = design.spec.trays
+	for name in design.spec:
+		fields[name].value = design.spec[name]/1000.0 if name == "pressure_pa" else design.spec[name]
+	fields.diameter.value = design.diameter
+	design_notice.text = "已读取结构设计；计算结果仍独立，不代表热工验证。"
+
+func _use_design() -> void:
+	if host_view.bridge.use_column_design(column_draft()):
+		design_notice.text = "建造设计已冻结。持蒸馏塔按 B 查看，右键放置；当前塔体不运行。"
+	else: design_notice.text = "设计参数无效，未用于建造。"

@@ -60,9 +60,18 @@ func _draw() -> void:
 			draw_rect(Rect2(center-Vector2(11,15),Vector2(3,26)),Color("4a4f46"))
 			draw_rect(Rect2(center+Vector2(8,-15),Vector2(3,26)),Color("4a4f46"))
 			draw_rect(Rect2(center-Vector2(2,10),Vector2(4,6)),Palette.MUTED)
-		if item.name in ["储罐","管道","测试泵","阀门"]:
+		if item.name in ["储罐","管道","测试泵","阀门","蒸馏塔"]:
 			draw_rect(Rect2(center-Vector2(16,16),Vector2(32,28)),Color("202728"))
-			if item.name == "储罐":
+			if item.name == "蒸馏塔":
+				draw_rect(Rect2(center-Vector2(7,13),Vector2(14,25)),Color("87969b"))
+				draw_ellipse_icon(center-Vector2(0,13),Vector2(7,3),Color("b3bec1"))
+				draw_ellipse_icon(center+Vector2(0,12),Vector2(7,3),Color("62757c"))
+				for level in [-7,-1,5]:
+					draw_line(center+Vector2(-7,level),center+Vector2(7,level),Color("d2b16d"),2)
+				draw_line(center+Vector2(-13,-1),center+Vector2(-7,-1),Color("d2b16d"),3)
+				draw_line(center+Vector2(7,-10),center+Vector2(13,-10),Color("b3bec1"),3)
+				draw_line(center+Vector2(7,10),center+Vector2(13,10),Color("b3bec1"),3)
+			elif item.name == "储罐":
 				draw_rect(Rect2(center-Vector2(11,12),Vector2(22,23)),Color("87969b"))
 				draw_ellipse_icon(center-Vector2(0,12),Vector2(11,4),Color("b3bec1"))
 				draw_ellipse_icon(center+Vector2(0,11),Vector2(11,4),Color("62757c"))

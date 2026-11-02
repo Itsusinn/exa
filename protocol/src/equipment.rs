@@ -1,6 +1,40 @@
 //! Stable equipment identities and facts. Process simulation is not part of the wire layer.
 use serde::{Deserialize, Serialize};
 
+pub const COLUMN_THERMO_REVISION: &str = "butane-pentane-pr78-cp298-r1";
+
+/// Construction facts only. Validity does not certify a converged process design.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ColumnDesign {
+    pub diameter: u8,
+    pub spec: crate::DistillationSpec,
+    pub thermo_revision: String,
+}
+impl Default for ColumnDesign {
+    fn default() -> Self {
+        Self {
+            diameter: 2,
+            spec: Default::default(),
+            thermo_revision: COLUMN_THERMO_REVISION.into(),
+        }
+    }
+}
+impl ColumnDesign {
+    pub fn valid(&self) -> bool {
+        (2..=6).contains(&self.diameter)
+            && self.spec.valid()
+            && self.thermo_revision == COLUMN_THERMO_REVISION
+    }
+    pub fn size(&self) -> [i32; 3] {
+        [
+            i32::from(self.diameter),
+            i32::from(self.spec.trays) + 2,
+            i32::from(self.diameter),
+        ]
+    }
+}
+
+pub const COLUMN_ITEM: &str = "蒸馏塔";
 pub const TANK_ITEM: &str = "储罐";
 pub const PIPE_ITEM: &str = "管道";
 pub const PUMP_ITEM: &str = "测试泵";
@@ -51,10 +85,12 @@ pub enum EquipmentKind {
     Vessel,
     HeatExchanger,
     PipeRack,
+    Column,
 }
 impl EquipmentKind {
     pub fn item_name(self) -> &'static str {
         match self {
+            Self::Column => COLUMN_ITEM,
             Self::Tank => TANK_ITEM,
             Self::Pipe => PIPE_ITEM,
             Self::Pump => PUMP_ITEM,
@@ -66,6 +102,7 @@ impl EquipmentKind {
     }
     pub fn from_item(name: &str) -> Option<Self> {
         match name {
+            COLUMN_ITEM => Some(Self::Column),
             TANK_ITEM => Some(Self::Tank),
             PIPE_ITEM => Some(Self::Pipe),
             PUMP_ITEM => Some(Self::Pump),
@@ -78,6 +115,7 @@ impl EquipmentKind {
     }
     pub fn size(self) -> [i32; 3] {
         match self {
+            Self::Column => [2, 8, 2],
             Self::Tank | Self::Vessel => [2, 3, 2],
             Self::HeatExchanger => [2, 1, 3],
             Self::Pipe | Self::Pump | Self::Valve | Self::PipeRack => [1; 3],
@@ -207,6 +245,7 @@ pub struct EquipmentSnapshot {
     pub pipe_ends: Option<[u8; 2]>,
     /// None retains the original 2 x 3 x 2 geometry. Only tanks and vessels use this.
     pub tank_size: Option<TankSize>,
+    pub column_design: Option<ColumnDesign>,
     pub contents: Vec<MaterialAmount>,
     pub internal_energy_j: f64,
     pub enabled: bool,
@@ -253,6 +292,10 @@ impl EquipmentSnapshot {
     pub fn size(&self) -> [i32; 3] {
         if matches!(self.kind, EquipmentKind::Tank | EquipmentKind::Vessel) {
             self.tank_size_or_default().size()
+        } else if self.kind == EquipmentKind::Column {
+            self.column_design
+                .as_ref()
+                .map_or([2, 8, 2], ColumnDesign::size)
         } else {
             self.kind.size()
         }
@@ -266,6 +309,16 @@ impl EquipmentSnapshot {
             && self.tank_size.is_none_or(|size| {
                 matches!(self.kind, EquipmentKind::Tank | EquipmentKind::Vessel) && size.valid()
             })
+            && match (&self.column_design, self.kind) {
+                (Some(design), EquipmentKind::Column) => {
+                    design.valid()
+                        && self.axis == 0
+                        && self.contents.is_empty()
+                        && self.internal_energy_j == 0.0
+                }
+                (None, kind) => kind != EquipmentKind::Column,
+                _ => false,
+            }
             && (self.kind != EquipmentKind::PipeRack || self.axis != 1)
             && match (self.kind, self.pipe_ends) {
                 (EquipmentKind::Pipe, Some([a, b])) => a < b && b < 6,
@@ -356,6 +409,7 @@ pub enum EquipmentCommand {
         kind: EquipmentKind,
         axis: u8,
         tank_size: Option<TankSize>,
+        column_design: Option<ColumnDesign>,
         inventory_revision: u64,
         slot: u8,
     },
@@ -401,6 +455,7 @@ pub struct AssemblyLine {
 pub struct AssemblyReport {
     pub request_id: u64,
     pub master_id: u64,
+    pub master_kind: EquipmentKind,
     pub status: AssemblyStatus,
     pub lines: Vec<AssemblyLine>,
     pub message: String,
@@ -408,12 +463,17 @@ pub struct AssemblyReport {
 impl AssemblyReport {
     pub fn valid(&self) -> bool {
         let valid_id = |id| id > 0 && id <= i64::MAX as u64;
+        let line_count = match self.master_kind {
+            EquipmentKind::HeatExchanger => 4,
+            EquipmentKind::Column => 3,
+            _ => return false,
+        };
         valid_id(self.request_id)
             && valid_id(self.master_id)
             && self.message.len() <= 256
-            && self.lines.len() <= 4
+            && self.lines.len() <= line_count
             && self.lines.iter().enumerate().all(|(index, line)| {
-                line.port < 4
+                usize::from(line.port) < line_count
                     && !self.lines[..index]
                         .iter()
                         .any(|earlier| earlier.port == line.port)
@@ -424,10 +484,10 @@ impl AssemblyReport {
             })
             && match self.status {
                 AssemblyStatus::Complete => {
-                    self.lines.len() == 4 && self.lines.iter().all(|line| line.valid)
+                    self.lines.len() == line_count && self.lines.iter().all(|line| line.valid)
                 }
                 AssemblyStatus::Incomplete => {
-                    self.lines.len() == 4 && self.lines.iter().any(|line| !line.valid)
+                    self.lines.len() == line_count && self.lines.iter().any(|line| !line.valid)
                 }
                 AssemblyStatus::Stale | AssemblyStatus::Rejected => true,
             }
@@ -482,6 +542,60 @@ impl PipeRouteReply {
 mod tests {
     use super::*;
 
+    #[test]
+    fn column_construction_facts_are_bounded_and_roundtrip_without_process_results() {
+        let mut d = tank();
+        d.kind = EquipmentKind::Column;
+        d.contents.clear();
+        d.internal_energy_j = 0.0;
+        assert!(!d.valid());
+        let mut design = ColumnDesign::default();
+        for diameter in 2..=6 {
+            for trays in [2, 12] {
+                for feed in [1, trays] {
+                    design.diameter = diameter;
+                    design.spec.trays = trays;
+                    design.spec.feed_tray = feed;
+                    d.column_design = Some(design.clone());
+                    assert!(d.valid());
+                    assert_eq!(
+                        d.size(),
+                        [
+                            i32::from(diameter),
+                            i32::from(trays) + 2,
+                            i32::from(diameter)
+                        ]
+                    );
+                    let bytes = rmp_serde::to_vec(&d).unwrap();
+                    assert_eq!(
+                        rmp_serde::from_slice::<EquipmentSnapshot>(&bytes).unwrap(),
+                        d
+                    );
+                }
+            }
+        }
+        d.internal_energy_j = 1.0;
+        assert!(!d.valid());
+        d.internal_energy_j = 0.0;
+        d.contents = tank().contents;
+        assert!(!d.valid());
+        d.contents.clear();
+        d.kind = EquipmentKind::Vessel;
+        assert!(!d.valid());
+        d.kind = EquipmentKind::Column;
+        d.column_design.as_mut().unwrap().thermo_revision = "unknown".into();
+        assert!(!d.valid());
+        d.column_design.as_mut().unwrap().spec.trays = u8::MAX;
+        assert_eq!(d.size()[1], 257);
+        assert!(!d.valid());
+        design.spec.trays = 6;
+        design.spec.feed_tray = 7;
+        assert!(!design.valid());
+        design.spec.feed_tray = 3;
+        design.spec.feed_mol_s = f64::NAN;
+        assert!(!design.valid());
+    }
+
     fn tank() -> EquipmentSnapshot {
         EquipmentSnapshot {
             id: 1,
@@ -491,6 +605,7 @@ mod tests {
             axis: 0,
             pipe_ends: None,
             tank_size: None,
+            column_design: None,
             contents: vec![MaterialAmount {
                 material: "icheme:water".into(),
                 moles: 55.5,
@@ -522,6 +637,7 @@ mod tests {
                 kind: EquipmentKind::Tank,
                 axis: 0,
                 tank_size: None,
+                column_design: None,
                 inventory_revision: 7,
                 slot: 1,
             },
@@ -625,6 +741,7 @@ mod tests {
         let mut report = AssemblyReport {
             request_id: 1,
             master_id: 2,
+            master_kind: EquipmentKind::HeatExchanger,
             status: AssemblyStatus::Complete,
             lines: (0..4)
                 .map(|port| AssemblyLine {
@@ -793,9 +910,23 @@ mod tests {
         }
         let bytes = rmp_serde::to_vec(&crate::ServerMessage::EquipmentState {
             revision: i64::MAX as u64,
-            devices,
+            devices: devices.clone(),
         })
         .unwrap();
         assert!(bytes.len() < 1_048_576, "{} bytes", bytes.len());
+        for device in &mut devices {
+            device.kind = EquipmentKind::Column;
+            device.thermal = None;
+            device.contents.clear();
+            device.internal_energy_j = 0.0;
+            device.column_design = Some(ColumnDesign::default());
+            assert!(device.valid());
+        }
+        let bytes = rmp_serde::to_vec(&crate::ServerMessage::EquipmentState {
+            revision: i64::MAX as u64,
+            devices,
+        })
+        .unwrap();
+        assert!(bytes.len() < 1_048_576, "{} column bytes", bytes.len());
     }
 }

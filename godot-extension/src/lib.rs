@@ -319,6 +319,46 @@ impl GameBridge {
     }
 
     #[func]
+    fn validate_column_design(&self, input: VarDictionary) -> bool {
+        parse_column_design(&input).is_some()
+    }
+
+    #[func]
+    fn use_column_design(&mut self, input: VarDictionary) -> bool {
+        let Some(design) = parse_column_design(&input) else {
+            return false;
+        };
+        self.session.column_design = Some(design);
+        true
+    }
+
+    #[func]
+    fn column_build_design(&self) -> VarDictionary {
+        self.session
+            .column_design
+            .as_ref()
+            .map_or_else(VarDictionary::new, column_design_dictionary)
+    }
+
+    #[func]
+    fn column_selected(&self) -> bool {
+        self.session.selected_equipment() == Some(protocol::EquipmentKind::Column)
+    }
+
+    #[func]
+    fn column_geometry(&self, input: VarDictionary) -> VarDictionary {
+        let Some(design) = parse_column_design(&input) else {
+            return VarDictionary::new();
+        };
+        geometry(presentation::equipment_shape_configured(
+            protocol::EquipmentKind::Column,
+            0,
+            None,
+            Some(&design),
+        ))
+    }
+
+    #[func]
     fn close_distillation(&mut self) {
         self.session.close_distillation();
     }
@@ -755,8 +795,59 @@ fn distillation_spec_dictionary(spec: &protocol::DistillationSpec) -> VarDiction
     "reflux_ratio" => spec.reflux_ratio, "distillate_fraction" => spec.distillate_fraction }
 }
 
+fn column_design_dictionary(design: &protocol::ColumnDesign) -> VarDictionary {
+    vdict! {"diameter" => i32::from(design.diameter), "thermo_revision" => design.thermo_revision.as_str(), "spec" => &distillation_spec_dictionary(&design.spec)}
+}
+
+fn parse_column_design(input: &VarDictionary) -> Option<protocol::ColumnDesign> {
+    if input.len() != 3 {
+        return None;
+    }
+    let diameter = column_number(input.get("diameter")?)?;
+    let spec = input.get("spec")?.try_to::<VarDictionary>().ok()?;
+    if spec.len() != 8 || diameter.fract() != 0.0 || !(2.0..=6.0).contains(&diameter) {
+        return None;
+    }
+    let number = |key: &str| column_number(spec.get(key)?);
+    let trays = number("trays")?;
+    let feed = number("feed_tray")?;
+    if trays.fract() != 0.0
+        || feed.fract() != 0.0
+        || !(2.0..=12.0).contains(&trays)
+        || !(1.0..=trays).contains(&feed)
+    {
+        return None;
+    }
+    let design = protocol::ColumnDesign {
+        diameter: diameter as u8,
+        thermo_revision: input
+            .get("thermo_revision")?
+            .try_to::<GString>()
+            .ok()?
+            .to_string(),
+        spec: protocol::DistillationSpec {
+            trays: trays as u8,
+            feed_tray: feed as u8,
+            feed_mol_s: number("feed_mol_s")?,
+            butane_fraction: number("butane_fraction")?,
+            feed_temperature_k: number("feed_temperature_k")?,
+            pressure_pa: number("pressure_pa")?,
+            reflux_ratio: number("reflux_ratio")?,
+            distillate_fraction: number("distillate_fraction")?,
+        },
+    };
+    design.valid().then_some(design)
+}
+
+fn column_number(value: Variant) -> Option<f64> {
+    value
+        .try_to::<f64>()
+        .ok()
+        .or_else(|| value.try_to::<i64>().ok().map(|n| n as f64))
+        .filter(|n| n.is_finite())
+}
+
 fn equipment_dictionary(device: &protocol::EquipmentSnapshot) -> VarDictionary {
-    let size = device.tank_size_or_default();
     let pipe_ends: VarArray = device
         .pipe_ends
         .into_iter()
@@ -774,10 +865,10 @@ fn equipment_dictionary(device: &protocol::EquipmentSnapshot) -> VarDictionary {
         })
         .collect();
     vdict! { "id" => device.id as i64, "revision" => device.revision as i64,
-    "name" => device.kind.item_name(), "kind" => match device.kind { protocol::EquipmentKind::Tank => 0i32, protocol::EquipmentKind::Pipe => 1, protocol::EquipmentKind::Pump => 2, protocol::EquipmentKind::Valve => 3, protocol::EquipmentKind::Vessel => 4, protocol::EquipmentKind::HeatExchanger => 5, protocol::EquipmentKind::PipeRack => 6 },
+    "name" => device.kind.item_name(), "kind" => match device.kind { protocol::EquipmentKind::Tank => 0i32, protocol::EquipmentKind::Pipe => 1, protocol::EquipmentKind::Pump => 2, protocol::EquipmentKind::Valve => 3, protocol::EquipmentKind::Vessel => 4, protocol::EquipmentKind::HeatExchanger => 5, protocol::EquipmentKind::PipeRack => 6, protocol::EquipmentKind::Column => 7 },
     "origin" => Vector3i::new(device.origin[0],device.origin[1],device.origin[2]), "axis" => i64::from(device.axis),
     "ports" => &ports, "pipe_ends" => &pipe_ends, "contents" => &contents, "internal_energy_j" => device.internal_energy_j,
-    "diameter" => i32::from(size.diameter), "height" => i32::from(size.height),
+    "diameter" => device.size()[0], "height" => device.size()[1], "column_design" => &device.column_design.as_ref().map_or_else(VarDictionary::new,column_design_dictionary),
     "design_capacity_m3" => presentation::tank_capacity_m3(device),
     "empty" => device.is_empty(), "enabled" => device.enabled, "opening" => device.opening,
     "pump_reversed" => device.pump_reversed, "thermal" => &thermal_settings_dictionary(device.thermal.as_ref()), "reading" => &reading_dictionary(device.reading.as_ref()) }

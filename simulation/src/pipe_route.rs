@@ -312,6 +312,7 @@ mod tests {
             pump_reversed: false,
             pipe_ends: None,
             tank_size: None,
+            column_design: None,
             thermal: None,
             reading: None,
         }

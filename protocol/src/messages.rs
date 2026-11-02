@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u32 = 16;
+pub const PROTOCOL_VERSION: u32 = 17;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ClientMessage {

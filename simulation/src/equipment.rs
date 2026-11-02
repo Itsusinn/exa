@@ -1,6 +1,6 @@
 //! Shared device geometry, occupancy and ray selection for authority and prediction.
 use crate::{grid::Grid, EYE_HEIGHT};
-use protocol::{EquipmentKind, EquipmentSnapshot, TankSize, AIR, BLOCK_REACH, WATER};
+use protocol::{ColumnDesign, EquipmentKind, EquipmentSnapshot, TankSize, AIR, BLOCK_REACH, WATER};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CollisionBox {
@@ -44,8 +44,19 @@ pub fn placement_origin_sized(
     kind: EquipmentKind,
     tank_size: Option<TankSize>,
 ) -> [i32; 3] {
+    placement_origin_configured(hit, kind, tank_size, None)
+}
+
+pub fn placement_origin_configured(
+    hit: WorldHit,
+    kind: EquipmentKind,
+    tank_size: Option<TankSize>,
+    column_design: Option<&ColumnDesign>,
+) -> [i32; 3] {
     let size = if matches!(kind, EquipmentKind::Tank | EquipmentKind::Vessel) {
         tank_size.unwrap_or_default().size()
+    } else if kind == EquipmentKind::Column {
+        column_design.map_or(kind.size(), ColumnDesign::size)
     } else {
         kind.size()
     };
@@ -100,12 +111,12 @@ pub fn tank_centroid_height_m(device: &EquipmentSnapshot) -> f64 {
 
 /// The nearest cell-centred row to the axis, retaining local z=0.5 for old tanks.
 pub fn tank_nozzle_z_m(device: &EquipmentSnapshot) -> f32 {
-    f32::from(device.tank_size_or_default().diameter.saturating_sub(1) / 2) + 0.5
+    ((device.size()[0] - 1).max(0) / 2) as f32 + 0.5
 }
 
 /// Neck length reaches inside the cylindrical wall; the original neck is 0.4 m.
 pub fn tank_nozzle_length_m(device: &EquipmentSnapshot) -> f32 {
-    let centre = f32::from(device.tank_size_or_default().diameter) / 2.0;
+    let centre = device.size()[0] as f32 / 2.0;
     let radius = centre - 0.1;
     let offset = tank_nozzle_z_m(device) - centre;
     (centre - (radius * radius - offset * offset).max(0.0).sqrt() + 0.1).max(0.4)
@@ -193,17 +204,17 @@ pub fn collision_boxes(device: &EquipmentSnapshot) -> Vec<CollisionBox> {
                 })
                 .collect()
         }
-        EquipmentKind::Tank | EquipmentKind::Vessel => {
+        EquipmentKind::Tank | EquipmentKind::Vessel | EquipmentKind::Column => {
             let mut boxes = Vec::with_capacity(34);
-            let size = device.tank_size_or_default();
-            let diameter = f32::from(size.diameter);
-            let height = f32::from(size.height);
+            let diameter = device.size()[0] as f32;
+            let height = device.size()[1] as f32;
             let centre = diameter / 2.0;
-            let shell_radius = if device.kind == EquipmentKind::Vessel {
-                centre - 0.075
-            } else {
-                centre - 0.1
-            };
+            let shell_radius =
+                if matches!(device.kind, EquipmentKind::Vessel | EquipmentKind::Column) {
+                    centre - 0.075
+                } else {
+                    centre - 0.1
+                };
             for band in 0..32 {
                 let z0 = centre - shell_radius + band as f32 * (2.0 * shell_radius / 32.0);
                 let z1 = z0 + 2.0 * shell_radius / 32.0;
@@ -222,6 +233,21 @@ pub fn collision_boxes(device: &EquipmentSnapshot) -> Vec<CollisionBox> {
             }
             let nozzle_z = tank_nozzle_z_m(device);
             let neck = tank_nozzle_length_m(device);
+            if device.kind == EquipmentKind::Column {
+                for port in ports(device) {
+                    let y = port.position[1] - origin[1];
+                    let x = if port.normal[0] < 0 {
+                        0.0
+                    } else {
+                        diameter - neck
+                    };
+                    boxes.push(translated(
+                        [x, y - 0.125, nozzle_z - 0.125],
+                        [x + neck, y + 0.125, nozzle_z + 0.125],
+                    ));
+                }
+                return boxes;
+            }
             boxes.push(translated(
                 [0.0, 0.375, nozzle_z - 0.125],
                 [neck, 0.625, nozzle_z + 0.125],
@@ -250,6 +276,31 @@ pub fn collision_boxes(device: &EquipmentSnapshot) -> Vec<CollisionBox> {
 
 pub fn ports(device: &EquipmentSnapshot) -> Vec<EquipmentPort> {
     let origin = device.origin.map(|v| v as f32);
+    if device.kind == EquipmentKind::Column {
+        let Some(design) = device.column_design.as_ref().filter(|d| d.valid()) else {
+            return vec![];
+        };
+        let n = f32::from(design.spec.trays);
+        return [n + 1.5 - f32::from(design.spec.feed_tray), n + 1.5, 0.5]
+            .into_iter()
+            .enumerate()
+            .map(|(id, y)| EquipmentPort {
+                id: id as u8,
+                circuit: id as u8,
+                position: [
+                    origin[0]
+                        + if id == 0 {
+                            0.0
+                        } else {
+                            f32::from(design.diameter)
+                        },
+                    origin[1] + y,
+                    origin[2] + tank_nozzle_z_m(device),
+                ],
+                normal: [if id == 0 { -1 } else { 1 }, 0, 0],
+            })
+            .collect();
+    }
     if device.kind == EquipmentKind::PipeRack {
         return vec![];
     }
@@ -451,6 +502,7 @@ mod tests {
             pump_reversed: false,
             pipe_ends: None,
             tank_size: None,
+            column_design: None,
             thermal: (kind == EquipmentKind::HeatExchanger).then(Default::default),
             reading: None,
         }
@@ -466,6 +518,86 @@ mod tests {
             ports(&tank)[1],
             ports(&device(EquipmentKind::Pipe, [1, 1, -1], 1))[0]
         ));
+    }
+
+    #[test]
+    fn columns_have_three_separate_grid_ports_and_bounded_collision_for_every_size() {
+        for diameter in 2..=6 {
+            for trays in [2, 12] {
+                for feed_tray in [1, trays] {
+                    let mut d = device(EquipmentKind::Column, [-17, 16, -17], 0);
+                    let mut design = ColumnDesign {
+                        diameter,
+                        ..Default::default()
+                    };
+                    design.spec.trays = trays;
+                    design.spec.feed_tray = feed_tray;
+                    d.column_design = Some(design.clone());
+                    assert!(d.valid());
+                    let ps = ports(&d);
+                    assert_eq!(ps.len(), 3);
+                    assert_eq!(
+                        ps.iter().map(|p| p.circuit).collect::<Vec<_>>(),
+                        vec![0, 1, 2]
+                    );
+                    assert_eq!(ps[0].normal, [-1, 0, 0]);
+                    assert_eq!(ps[1].normal, [1, 0, 0]);
+                    assert_eq!(ps[2].normal, [1, 0, 0]);
+                    assert!(ps[1].position[1] > ps[0].position[1]);
+                    assert!(ps[0].position[1] > ps[2].position[1]);
+                    let b = bounds(&d);
+                    let boxes = collision_boxes(&d);
+                    for shape in &boxes {
+                        assert!(
+                            (0..3).all(|i| shape.min[i] >= b.min[i] && shape.max[i] <= b.max[i])
+                        );
+                    }
+                    for p in &ps {
+                        assert_eq!(p.position[1].fract(), 0.5);
+                        assert_eq!(p.position[2].fract().abs(), 0.5);
+                        // Ports lie on the outside face. Occupancy is half-open,
+                        // so the +X face itself is not an interior point. Check
+                        // actual aiming from outside as well as solid interior.
+                        let inward =
+                            std::array::from_fn(|i| p.position[i] - p.normal[i] as f32 * 0.001);
+                        assert!(boxes.iter().any(|shape| shape.contains(inward)));
+                        let eye = std::array::from_fn(|i| p.position[i] + p.normal[i] as f32);
+                        let direction = p.normal.map(|v| -(v as f32));
+                        assert!(boxes.iter().any(|shape| ray_box(eye, direction, *shape)
+                            .is_some_and(|(distance, normal)| (distance - 1.0).abs() < 1e-5
+                                && normal == p.normal)));
+                    }
+                    assert_eq!(
+                        occupied_cells(&d).len(),
+                        usize::from(diameter).pow(2) * (usize::from(trays) + 2)
+                    );
+                    for face in 0..6 {
+                        let normal = face_normal(face).unwrap();
+                        let hit = WorldHit {
+                            position: [-1, 30, -1],
+                            normal,
+                            equipment: None,
+                            distance: 1.0,
+                        };
+                        let placed = placement_origin_configured(
+                            hit,
+                            EquipmentKind::Column,
+                            None,
+                            Some(&design),
+                        );
+                        let a = usize::from(face / 2);
+                        assert_eq!(
+                            placed[a],
+                            if face % 2 == 0 {
+                                hit.position[a] - design.size()[a]
+                            } else {
+                                hit.position[a] + 1
+                            }
+                        );
+                    }
+                }
+            }
+        }
     }
     #[test]
     fn parametric_tanks_share_bounded_geometry_and_grid_aligned_nozzles() {

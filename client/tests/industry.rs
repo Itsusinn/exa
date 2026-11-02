@@ -190,6 +190,7 @@ impl Peer {
             kind,
             axis,
             tank_size,
+            column_design: None,
             inventory_revision,
             slot,
         }))

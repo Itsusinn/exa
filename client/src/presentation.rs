@@ -17,6 +17,7 @@ pub fn tank_capacity_for_size(size: TankSize) -> f64 {
         origin: [0; 3],
         axis: 0,
         tank_size: Some(size),
+        column_design: None,
         pipe_ends: None,
         contents: vec![],
         internal_energy_j: 0.0,
@@ -29,12 +30,31 @@ pub fn tank_capacity_for_size(size: TankSize) -> f64 {
 }
 
 pub fn equipment_shape_sized(kind: EquipmentKind, axis: u8, size: Option<TankSize>) -> Mesh {
+    equipment_shape_configured(kind, axis, size, None)
+}
+
+pub fn equipment_shape_configured(
+    kind: EquipmentKind,
+    axis: u8,
+    size: Option<TankSize>,
+    column_design: Option<&ColumnDesign>,
+) -> Mesh {
     let mut mesh = Mesh::default();
     let steel = [0.57, 0.62, 0.64];
     let dark = [0.27, 0.31, 0.33];
     let size = size.unwrap_or_default();
-    let diameter = f32::from(size.diameter);
-    let height = f32::from(size.height);
+    let default_column = ColumnDesign::default();
+    let column = column_design.unwrap_or(&default_column);
+    let diameter = if kind == EquipmentKind::Column {
+        f32::from(column.diameter)
+    } else {
+        f32::from(size.diameter)
+    };
+    let height = if kind == EquipmentKind::Column {
+        column.size()[1] as f32
+    } else {
+        f32::from(size.height)
+    };
     let template = EquipmentSnapshot {
         id: 1,
         revision: 0,
@@ -42,6 +62,7 @@ pub fn equipment_shape_sized(kind: EquipmentKind, axis: u8, size: Option<TankSiz
         origin: [0; 3],
         axis,
         tank_size: matches!(kind, EquipmentKind::Tank | EquipmentKind::Vessel).then_some(size),
+        column_design: (kind == EquipmentKind::Column).then(|| column.clone()),
         pipe_ends: None,
         contents: vec![],
         internal_energy_j: 0.0,
@@ -54,6 +75,55 @@ pub fn equipment_shape_sized(kind: EquipmentKind, axis: u8, size: Option<TankSiz
     let nozzle_z = game_simulation::equipment::tank_nozzle_z_m(&template);
     let neck = game_simulation::equipment::tank_nozzle_length_m(&template);
     match kind {
+        EquipmentKind::Column => {
+            let centre = diameter / 2.0;
+            // Keep the bottom cap off the supporting voxel's top face, including
+            // in translucent build previews. Collision remains conservative.
+            cylinder(
+                &mut mesh,
+                [centre, 0.01, centre],
+                1,
+                height - 0.16,
+                centre - 0.1,
+                [0.42, 0.51, 0.58],
+            );
+            for tray in 1..=column.spec.trays {
+                let y = f32::from(column.spec.trays) + 1.5 - f32::from(tray);
+                let color = if tray == column.spec.feed_tray {
+                    [0.65, 0.49, 0.24]
+                } else {
+                    dark
+                };
+                cylinder(
+                    &mut mesh,
+                    [centre, y - 0.05, centre],
+                    1,
+                    0.1,
+                    centre - 0.075,
+                    color,
+                );
+            }
+            for port in equipment_ports(&template) {
+                let color = match port.id {
+                    0 => [0.65, 0.49, 0.24],
+                    1 => [0.40, 0.60, 0.58],
+                    _ => dark,
+                };
+                let x = if port.normal[0] < 0 {
+                    0.0
+                } else {
+                    diameter - neck
+                };
+                cylinder(
+                    &mut mesh,
+                    [x, port.position[1], nozzle_z],
+                    0,
+                    neck,
+                    0.125,
+                    color,
+                );
+            }
+        }
         EquipmentKind::Tank => {
             cylinder(
                 &mut mesh,
@@ -469,6 +539,7 @@ mod tests {
                         origin: [0; 3],
                         axis: 0,
                         tank_size: Some(size),
+                        column_design: None,
                         pipe_ends: None,
                         contents: vec![],
                         internal_energy_j: 0.0,
@@ -538,6 +609,7 @@ mod tests {
                 }
                 let device = EquipmentSnapshot {
                     tank_size: None,
+                    column_design: None,
                     id: 1,
                     revision: 0,
                     kind,
@@ -570,11 +642,66 @@ mod tests {
     }
 
     #[test]
+    fn column_mesh_tracks_trays_feed_and_diameter_inside_shared_collision() {
+        for diameter in 2..=6 {
+            for trays in [2, 12] {
+                for feed_tray in [1, trays] {
+                    let mut design = ColumnDesign {
+                        diameter,
+                        ..Default::default()
+                    };
+                    design.spec.trays = trays;
+                    design.spec.feed_tray = feed_tray;
+                    let device = EquipmentSnapshot {
+                        id: 1,
+                        revision: 0,
+                        kind: EquipmentKind::Column,
+                        origin: [0; 3],
+                        axis: 0,
+                        tank_size: None,
+                        column_design: Some(design.clone()),
+                        pipe_ends: None,
+                        contents: vec![],
+                        internal_energy_j: 0.0,
+                        enabled: false,
+                        opening: 1.0,
+                        pump_reversed: false,
+                        thermal: None,
+                        reading: None,
+                    };
+                    let mesh =
+                        equipment_shape_configured(EquipmentKind::Column, 0, None, Some(&design));
+                    assert!(!mesh.vertices.is_empty());
+                    let boxes = game_simulation::equipment::collision_boxes(&device);
+                    for vertex in &mesh.vertices {
+                        assert!(
+                            boxes.iter().any(|shape| (0..3)
+                                .all(|i| vertex.position[i] >= shape.min[i] - 1e-5
+                                    && vertex.position[i] <= shape.max[i] + 1e-5)),
+                            "{design:?} {:?}",
+                            vertex.position
+                        );
+                    }
+                    for port in equipment_ports(&device) {
+                        assert!(mesh
+                            .vertices
+                            .iter()
+                            .any(|v| (v.position[0] - port.position[0]).abs() < 1e-5
+                                && (v.position[1] - port.position[1]).abs() <= 0.126
+                                && (v.position[2] - port.position[2]).abs() <= 0.126));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn every_explicit_pipe_join_stays_in_the_shared_arm_collision() {
         for first in 0..6 {
             for second in first + 1..6 {
                 let device = EquipmentSnapshot {
                     tank_size: None,
+                    column_design: None,
                     id: 1,
                     revision: 0,
                     kind: EquipmentKind::Pipe,

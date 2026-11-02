@@ -1,7 +1,7 @@
 //! Authoritative equipment transactions and atomic publication of background fluid results.
 use super::*;
 use game_simulation::{
-    equipment::{collision_boxes, occupied_cells, placement_origin_sized, target},
+    equipment::{collision_boxes, occupied_cells, placement_origin_configured, target},
     inventory::insert,
     HEIGHT, RADIUS,
 };
@@ -14,10 +14,11 @@ impl VoxelWorld {
             (TANK_ITEM, 2),
             (PIPE_ITEM, 16),
             (PUMP_ITEM, 2),
-            (VALVE_ITEM, 2),
+            (VALVE_ITEM, 4),
             (protocol::VESSEL_ITEM, 4),
             (protocol::HEAT_EXCHANGER_ITEM, 1),
             (protocol::PIPE_RACK_ITEM, 8),
+            (protocol::COLUMN_ITEM, 1),
         ] {
             anyhow::ensure!(
                 insert(
@@ -108,6 +109,7 @@ impl VoxelWorld {
                 kind,
                 axis,
                 tank_size,
+                column_design,
                 inventory_revision,
                 slot,
             } => {
@@ -133,7 +135,8 @@ impl VoxelWorld {
                     hit.position == expected && hit.normal != [0; 3],
                     "目标已变化，请重新瞄准。"
                 );
-                let origin = placement_origin_sized(hit, kind, tank_size);
+                let origin =
+                    placement_origin_configured(hit, kind, tank_size, column_design.as_ref());
                 let equipment = EquipmentSnapshot {
                     id: next_id,
                     revision,
@@ -147,6 +150,7 @@ impl VoxelWorld {
                     pump_reversed: false,
                     pipe_ends: None,
                     tank_size,
+                    column_design,
                     thermal: (kind == EquipmentKind::HeatExchanger)
                         .then(protocol::ThermalSettings::default),
                     reading: None,
@@ -488,6 +492,7 @@ impl VoxelWorld {
                     || device.axis != old.axis
                     || device.pipe_ends != old.pipe_ends
                     || device.tank_size != old.tank_size
+                    || device.column_design != old.column_design
                     || device.enabled != old.enabled
                     || device.opening != old.opening
                     || device.pump_reversed != old.pump_reversed
@@ -685,6 +690,8 @@ impl VoxelWorld {
             crate::industry_data::read_v3(&archive_path)?
         } else if version == 11 {
             crate::industry_data::read_v4(&archive_path)?
+        } else if version == 12 {
+            crate::industry_data::read_v5(&archive_path)?
         } else {
             crate::industry_data::read(&archive_path)?
         };
@@ -767,6 +774,7 @@ mod tests {
                 kind: EquipmentKind::Tank,
                 axis: 0,
                 tank_size: None,
+                column_design: None,
                 inventory_revision: w.players[&1].inventory.revision,
                 slot: 0,
             },
@@ -786,6 +794,7 @@ mod tests {
             kind: EquipmentKind::Tank,
             axis: 0,
             tank_size: Some(size),
+            column_design: None,
             inventory_revision: bag.revision,
             slot: 0,
         };
@@ -953,7 +962,7 @@ mod tests {
         );
         restored.save(&path).unwrap();
         let current: Save = rmp_serde::from_slice(&std::fs::read(&path).unwrap()[8..]).unwrap();
-        assert_eq!(current.version, 12);
+        assert_eq!(current.version, 13);
         assert_eq!(VoxelWorld::load(&path).unwrap().terrain.equipment, expected);
     }
 
@@ -1052,7 +1061,82 @@ mod tests {
         }
         restored.save(&path).unwrap();
         let final_save: Save = rmp_serde::from_slice(&std::fs::read(&path).unwrap()[8..]).unwrap();
-        assert_eq!(final_save.version, 12);
+        assert_eq!(final_save.version, 13);
+        assert_eq!(VoxelWorld::load(&path).unwrap().industry_ledger, ledger);
+    }
+
+    #[test]
+    fn version_twelve_migration_preserves_thermal_facts_and_all_archive_backups() {
+        let (mut w, _) = world();
+        place_tank(&mut w);
+        crate::process::fill_water(w.terrain.equipment.get_mut(&1).unwrap(), 2000.0, 300.0)
+            .unwrap();
+        let mut vessel = w.terrain.equipment[&1].clone();
+        vessel.id = 2;
+        vessel.origin = [4, 81, 15];
+        vessel.kind = EquipmentKind::Vessel;
+        vessel.contents.clear();
+        vessel.internal_energy_j = 0.0;
+        let energy = crate::process::charge(&mut vessel, [1000.0, 1000.0], 320.0).unwrap();
+        w.terrain.equipment.insert(2, vessel);
+        let mut pipe = w.terrain.equipment[&1].clone();
+        pipe.id = 3;
+        pipe.kind = EquipmentKind::Pipe;
+        pipe.origin = [10, 81, 15];
+        pipe.contents.clear();
+        pipe.internal_energy_j = 0.0;
+        pipe.pipe_ends = Some([0, 4]);
+        let mut rack = pipe.clone();
+        rack.id = 4;
+        rack.kind = EquipmentKind::PipeRack;
+        rack.pipe_ends = None;
+        w.terrain.equipment.insert(3, pipe);
+        w.terrain.equipment.insert(4, rack);
+        w.next_equipment_id = 5;
+        w.industry_ledger.hydro_injected_moles = [1000.0, 1000.0];
+        w.industry_ledger.hydro_injected_energy_j = energy;
+        w.industry_ledger.heat_added_j = 123.0;
+        w.terrain.equipment.get_mut(&1).unwrap().tank_size = Some(protocol::TankSize {
+            diameter: 3,
+            height: 5,
+        });
+        let expected = w.terrain.equipment.clone();
+        let ledger = w.industry_ledger.clone();
+        let dir = directory();
+        let path = dir.path().join("world3d.bin");
+        w.save(&path).unwrap();
+        let mut saved: Save = rmp_serde::from_slice(&std::fs::read(&path).unwrap()[8..]).unwrap();
+        saved.version = 12;
+        let ip = path
+            .with_extension("industry")
+            .join(format!("{}.rkyv", saved.industry_archive.as_ref().unwrap()));
+        let archive = crate::industry_data::read(&ip).unwrap();
+        std::fs::remove_file(&ip).unwrap();
+        crate::industry_data::write_v5_fixture(&ip, &archive).unwrap();
+        let mut bytes = b"DNG3D001".to_vec();
+        bytes.extend(rmp_serde::to_vec(&saved).unwrap());
+        std::fs::write(&path, &bytes).unwrap();
+        let restored = VoxelWorld::load(&path).unwrap();
+        assert_eq!(restored.terrain.equipment, expected);
+        assert_eq!(restored.industry_ledger, ledger);
+        assert_eq!(
+            std::fs::read(path.with_extension("v12.bak")).unwrap(),
+            bytes
+        );
+        for extension in ["chunks", "players", "entities", "industry"] {
+            let original = path.with_extension(extension);
+            let backup = dir.path().join(format!("world3d.v12.bak.{extension}"));
+            for entry in std::fs::read_dir(original).unwrap() {
+                let entry = entry.unwrap();
+                assert_eq!(
+                    std::fs::read(entry.path()).unwrap(),
+                    std::fs::read(backup.join(entry.file_name())).unwrap()
+                );
+            }
+        }
+        restored.save(&path).unwrap();
+        let final_save: Save = rmp_serde::from_slice(&std::fs::read(&path).unwrap()[8..]).unwrap();
+        assert_eq!(final_save.version, 13);
         assert_eq!(VoxelWorld::load(&path).unwrap().industry_ledger, ledger);
     }
 
@@ -1123,7 +1207,7 @@ mod tests {
         }
         restored.save(&path).unwrap();
         let final_save: Save = rmp_serde::from_slice(&std::fs::read(&path).unwrap()[8..]).unwrap();
-        assert_eq!(final_save.version, 12);
+        assert_eq!(final_save.version, 13);
         assert_eq!(VoxelWorld::load(&path).unwrap().industry_ledger, ledger);
     }
 
@@ -1147,6 +1231,30 @@ mod tests {
         assert!(VoxelWorld::load(&path).is_err());
         assert_eq!(std::fs::read(&path).unwrap(), manifest_bytes);
         assert_eq!(std::fs::read(&ip).unwrap(), archived_bytes);
+    }
+
+    #[test]
+    fn malformed_saved_column_design_refuses_load_without_rewriting_archives() {
+        let (mut w, _rx) = world();
+        place_tank(&mut w);
+        let dir = directory();
+        let path = dir.path().join("world3d.bin");
+        w.save(&path).unwrap();
+        let manifest_bytes = std::fs::read(&path).unwrap();
+        let manifest: Save = rmp_serde::from_slice(&manifest_bytes[8..]).unwrap();
+        let ip = path
+            .with_extension("industry")
+            .join(format!("{}.rkyv", manifest.industry_archive.unwrap()));
+        let mut archive = crate::industry_data::read(&ip).unwrap();
+        archive.equipment[0].kind = "game:column".into();
+        archive.equipment[0].column_design = Some(vec![0xff]);
+        std::fs::remove_file(&ip).unwrap();
+        crate::industry_data::write_new(&ip, &archive).unwrap();
+        let malformed = std::fs::read(&ip).unwrap();
+        assert!(VoxelWorld::load(&path).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), manifest_bytes);
+        assert_eq!(std::fs::read(&ip).unwrap(), malformed);
+        assert!(!path.with_extension("v11.bak").exists());
     }
 
     #[test]
@@ -1354,6 +1462,7 @@ mod tests {
                 kind: EquipmentKind::Pipe,
                 axis,
                 tank_size: None,
+                column_design: None,
                 inventory_revision: revision,
                 slot: 1,
             };
@@ -1410,6 +1519,7 @@ mod tests {
                     kind: EquipmentKind::Tank,
                     axis: 0,
                     tank_size: None,
+                    column_design: None,
                     inventory_revision: bag.revision,
                     slot: 0
                 }
