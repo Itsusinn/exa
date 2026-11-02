@@ -45,6 +45,18 @@ Windows 导出使用标准模板与纯运行时暂存项目，排除插件、.NE
 
 ## 验证状态与待办
 
+2026-11-02 抗锯齿：默认由 MSAA 2× 提升为 4×；设置页提供关闭/FXAA/MSAA 2×/MSAA 4×/TAA，写入原 settings.cfg 的 video.antialiasing，缺省或未知值回退 4×。切换先清除其他 AA，沿用 Godot 原生 3D 视口管线，UI 不追加模糊。参考 Horizon 世界后处理/设置与 Iris 光影包渲染目标兼容代码，未移植其图形后端。
+
+验证：Godot smoke 通过，覆盖 TAA→FXAA→MSAA→关闭的互斥及未知值回退；实际 Forward+ / RX 7900 XTX 完成五档静态截图、两档各 60 帧镜头平移和设置页布局检查，日志无错误。证据 `target/aa-visual/aa-*.png`、`settings.png`；日志 `target/aa-{visual,smoke}.log`。TAA 移动中可见纹理软化，默认仍为 MSAA 4×。本次仅修改 Godot 配置/UI/测试及文档，不重跑未改动的 Rust；未进行独立进程设置重开、所有动态实体/传送的 TAA 拖影矩阵、GPU 性能基准或发布导出验收。
+
+2026-11-02 法线贴图补齐：确认既有石材/木板/草叶/树皮已加载 OpenGL 法线；新增固定种子 512px 无缝 `granular_normal.tres`，覆盖原本平面的沙土/黏土、雪和冰，设置各材质凹凸强度及全局 `normal_strength`。修复导数切线基归一化中的过大下限，原 1e-6 平方长度阈值会压弱小导数下的法线和倒角，改为 1e-20 仅保护退化情况。材质起伏不修改几何、碰撞或协议。
+
+验证：Godot smoke 通过；实际 Forward+ / RX 7900 XTX 加载新资源、生成颗粒法线并运行石阶及四材质展示对照，最终 shader 无错误；`target/normal-visual/` 包含 `detail-normal-{off,on}.png`、`granular-normal-{off,on}.png` 与生成的法线图。相同视角下仅切换 normal_strength 的图像抽样变化分别为 6934、371 点，图形脚本检查效果不可为空；独立材质展示不代表自然地形生成验收。本次仅修改 Godot shader/资源/加载/图形检查与文档，Rust 测试沿用前条 226 项；未重新验证发布导出或大世界性能。
+
+2026-11-02 材质层次与着色倒角：沿用既有 CC0 PBR 纹理，加入连续世界空间小幅明暗/粗糙度变化，并补齐衍生岩石、树皮、树叶的粗糙度采样。CPU 为地形面生成四条外露凸棱掩码，与 AO 一起经 UV2 传入 shader；默认 0.035 格宽度偏转着色法线，与已有法线贴图叠加，亚像素时衰减。共面相邻方块不生成内部倒角，水和非地形不启用。几何、轮廓、阴影投影几何与碰撞不变；未增加高度图或视差映射。
+
+验证：全工作区 226 项 Rust 测试、`just check`、扩展构建、Godot smoke 通过；新增测试覆盖孤立方块六面、跨区块平面接缝、拆块恢复与水面排除。实际 Forward+ / RX 7900 XTX 检查近景与远景 `target/bevel-visual/{steps,detail}-material-{before,after}.png`，最终图形日志无着色器错误。日志 `target/bevel-{tests,workspace-tests,check,build,visual,smoke}.log`；对照只切换倒角与连续材质变化，衍生材质粗糙度采样两边保持相同。未重新验证发布导出、完整键鼠/DPI 或大世界性能。
+
 2026-11-02 平滑方块 AO：按用户给出的 Minecraft 接地/内角参考，四角遮挡数量打包后在顶点阶段解码，像素阶段使用 smoothstep 双线性插值，替代三角形内的线性 AO 插值；默认强度 0.85，不修改几何或碰撞。追加测试确认单个对角遮挡在两个三角形携带一致的四角数据；客户端 23 项测试、`just check`、扩展构建、Godot smoke 通过。实际 Forward+ / RX 7900 XTX 复核 `target/smooth-ao/steps-ao-{off,on}.png` 与 `contact-ao-{off,on}.png`，对照保持相同视角并关闭 SSAO，观察台阶内角与接地渐暗；图形日志无着色器错误。全工作区 225 项结果沿用下条，本次局部修改后复跑客户端测试；未新增发布导出或大世界性能验收。
 
 2026-11-02 Horizon / Iris 渲染参考改进：在现有 Godot Forward+ + SDFGI 内增加方块顶点接触 AO，缓存 27 个区块引用构造一格 halo，覆盖负坐标、区块边角、未知区块与水；以 UV2.y 独立传递遮蔽，非地形默认 1。变更/卸载使完整邻域失效，仍保留每帧两区块/2 ms 的调度预算（单区块不可抢占）。太阳使用四级混合阴影、4096 阴影图；降低 SSAO 叠加强度，对法线高频变化增大粗糙度，并衰减亚像素程序化颗粒。参考路径与实现边界见 README，未引入 Horizon/wgpu 或 Iris/Java 依赖，未改变协议、存档或玩法。

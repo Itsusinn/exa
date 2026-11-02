@@ -350,6 +350,7 @@ fn cylinder_section(
             pattern: 0,
             occlusion: 1.0,
             face_occlusion: 0,
+            bevel_mask: 0,
         }));
         for (end, (along, sign)) in [(0.0, -1.0), (length, 1.0)].into_iter().enumerate() {
             if !caps[end] {
@@ -511,8 +512,31 @@ pub fn terrain_chunk(model: &Client3d, origin: [i32; 3]) -> Mesh {
                     let packed = corners.into_iter().enumerate().fold(0u8, |bits, (i, ao)| {
                         bits | (((1.0 - ao) / 0.18).round() as u8).min(3) << (2 * i)
                     });
+                    let mut bevel_mask = 0;
+                    if block != WATER {
+                        for (edge, (a, b)) in
+                            [(0, 2), (2, 1), (1, 4), (4, 0)].into_iter().enumerate()
+                        {
+                            let p = mesh.vertices[start + a].position;
+                            let q = mesh.vertices[start + b].position;
+                            let cell = [x, y, z];
+                            let local = [lx, ly, lz];
+                            let adjacent: [usize; 3] = std::array::from_fn(|axis| {
+                                let step = if NORMALS[face][axis] == 0.0 {
+                                    (p[axis] + q[axis] - 2.0 * cell[axis] as f32 - 1.0) as i32
+                                } else {
+                                    0
+                                };
+                                (local[axis] as i32 + 1 + step) as usize
+                            });
+                            if !halo[adjacent[0] + 18 * (adjacent[2] + 18 * adjacent[1])] {
+                                bevel_mask |= 1 << edge;
+                            }
+                        }
+                    }
                     for vertex in &mut mesh.vertices[start..] {
                         vertex.face_occlusion = packed;
+                        vertex.bevel_mask = bevel_mask;
                     }
                 }
             }
@@ -1053,6 +1077,38 @@ mod tests {
         m.terrain.set([0, 8, -1], WATER);
         m.terrain.set([-1, 8, 0], AIR);
         assert_eq!(top_corner(&m), 1.0);
+    }
+
+    #[test]
+    fn bevels_only_round_exposed_edges_and_update_across_sections() {
+        let mut m = Client3d::default();
+        m.terrain = Grid::empty();
+        m.terrain.set([15, 7, 8], STONE);
+        let isolated = terrain_chunk(&m, [0, 0, 0]);
+        assert!(isolated.vertices.iter().all(|v| v.bevel_mask == 15));
+        m.terrain.set([16, 7, 8], STONE);
+        let left = terrain_chunk(&m, [0, 0, 0]);
+        let right = terrain_chunk(&m, [16, 0, 0]);
+        assert!(left
+            .vertices
+            .iter()
+            .filter(|v| v.normal == [0., 1., 0.])
+            .all(|v| v.bevel_mask == 11));
+        assert!(right
+            .vertices
+            .iter()
+            .filter(|v| v.normal == [0., 1., 0.])
+            .all(|v| v.bevel_mask == 14));
+        m.terrain.set([16, 7, 8], AIR);
+        assert!(terrain_chunk(&m, [0, 0, 0])
+            .vertices
+            .iter()
+            .all(|v| v.bevel_mask == 15));
+        m.terrain.set([15, 7, 8], WATER);
+        assert!(terrain_chunk(&m, [0, 0, 0])
+            .vertices
+            .iter()
+            .all(|v| v.bevel_mask == 0));
     }
 
     #[test]

@@ -17,6 +17,16 @@ func run() -> void:
 	scene.set_process(false)
 	scene._focus_gained() # Headless windows have no OS focus; simulate the focused game.
 	scene.hud.menu.loading_settings = true # Tests must not overwrite user preferences.
+	scene.hud.menu.set_antialiasing("taa")
+	check(root.use_taa and root.msaa_3d == Viewport.MSAA_DISABLED,"TAA enables without MSAA")
+	scene.hud.menu.set_antialiasing("fxaa")
+	check(not root.use_taa and root.screen_space_aa == Viewport.SCREEN_SPACE_AA_FXAA,"FXAA clears TAA")
+	scene.hud.menu.set_antialiasing("msaa2")
+	check(root.msaa_3d == Viewport.MSAA_2X and root.screen_space_aa == Viewport.SCREEN_SPACE_AA_DISABLED,"MSAA clears screen-space AA")
+	scene.hud.menu.set_antialiasing("off")
+	check(root.msaa_3d == Viewport.MSAA_DISABLED and not root.use_taa,"AA can be disabled")
+	scene.hud.menu.set_antialiasing("invalid")
+	check(root.msaa_3d == Viewport.MSAA_4X,"Unknown AA preference falls back to MSAA 4x")
 	check(scene.hud.menu.visible and scene.hud.menu.page == "home", "startup shows main menu")
 	scene.hud.menu.show_page("multiplayer")
 	check(scene.hud.address.is_visible_in_tree(), "multiplayer form opens separately")

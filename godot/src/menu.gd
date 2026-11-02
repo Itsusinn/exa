@@ -22,6 +22,9 @@ var fov_slider: HSlider
 var gi_toggle: CheckButton
 var sensitivity: HSlider
 var fullscreen: CheckButton
+const AA_MODES := ["off", "fxaa", "msaa2", "msaa4", "taa"]
+var antialiasing: OptionButton
+var aa_hint: Label
 var pages: Dictionary = {}
 var heading: Label
 var subtitle: Label
@@ -169,6 +172,14 @@ func _ready() -> void:
 	sensitivity.custom_minimum_size.y = 30
 	config.add_child(sensitivity)
 	sensitivity.value_changed.connect(func(_value: float): _save_settings())
+	antialiasing = OptionButton.new()
+	for label in ["抗锯齿：关闭", "抗锯齿：FXAA（轻量）", "抗锯齿：MSAA 2×", "抗锯齿：MSAA 4×（推荐）", "抗锯齿：TAA（时间累积）"]:
+		antialiasing.add_item(label)
+	config.add_child(antialiasing)
+	aa_hint = _text(config,"",14)
+	antialiasing.item_selected.connect(func(index: int):
+		set_antialiasing(AA_MODES[index])
+		_save_settings())
 	gi_toggle = CheckButton.new()
 	gi_toggle.text = "全局光照"
 	gi_toggle.button_pressed = true
@@ -202,6 +213,7 @@ func _ready() -> void:
 	sensitivity.value = clampf(float(settings.get_value("input", "sensitivity", 1.0)), 0.5, 2.0)
 	gi_toggle.button_pressed = bool(settings.get_value("video", "gi", true))
 	fullscreen.button_pressed = bool(settings.get_value("video", "fullscreen", false))
+	set_antialiasing(str(settings.get_value("video", "antialiasing", "msaa4")))
 	loading_settings = false
 	show_page("home")
 	resized.connect(queue_redraw)
@@ -255,10 +267,27 @@ func open_settings() -> void:
 	return_page = "pause" if in_game else "home"
 	show_page("settings")
 
+func set_antialiasing(mode: String) -> void:
+	var index := AA_MODES.find(mode)
+	if index < 0: index = 3
+	antialiasing.select(index)
+	var viewport := get_viewport()
+	# Keep techniques exclusive, including when leaving a temporal mode.
+	viewport.use_taa = false
+	viewport.screen_space_aa = Viewport.SCREEN_SPACE_AA_DISABLED
+	viewport.msaa_3d = Viewport.MSAA_DISABLED
+	match AA_MODES[index]:
+		"fxaa": viewport.screen_space_aa = Viewport.SCREEN_SPACE_AA_FXAA
+		"msaa2": viewport.msaa_3d = Viewport.MSAA_2X
+		"msaa4": viewport.msaa_3d = Viewport.MSAA_4X
+		"taa": viewport.use_taa = true
+	aa_hint.text = ["保留原始像素边缘。", "开销较低，画面会稍柔和。", "平滑轮廓，保留纹理清晰度。", "更细致地平滑轮廓，GPU 开销较高。", "改善细节闪烁；移动时可能模糊或拖影。"][index]
+
 func _save_settings() -> void:
 	if loading_settings: return
 	settings.set_value("video", "fov", fov_slider.value)
 	settings.set_value("video", "gi", gi_toggle.button_pressed)
+	settings.set_value("video", "antialiasing", AA_MODES[antialiasing.selected])
 	settings.set_value("video", "fullscreen", fullscreen.button_pressed)
 	settings.set_value("input", "sensitivity", sensitivity.value)
 	if settings.save("user://settings.cfg") != OK: feedback.text = "设置保存失败，请检查用户目录权限。"

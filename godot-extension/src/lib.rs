@@ -954,7 +954,10 @@ fn geometry(mesh: Mesh) -> VarDictionary {
             normal_data[index] = vector(v.normal);
             color_data[index] = Color::from_rgb(v.color[0], v.color[1], v.color[2]);
             uv_data[index] = Vector2::new(v.uv[0], v.uv[1]);
-            pattern_data[index] = Vector2::new(v.pattern as f32, f32::from(v.face_occlusion));
+            pattern_data[index] = Vector2::new(
+                v.pattern as f32,
+                f32::from(v.face_occlusion) + 256.0 * f32::from(v.bevel_mask),
+            );
         }
     }
     vdict! { "vertices" => &vertices, "normals" => &normals, "colors" => &colors, "uv" => &uv, "uv2" => &patterns }

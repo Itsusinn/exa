@@ -31,6 +31,10 @@ just dev
 
 设置包含视野、鼠标灵敏度、全局光照和全屏，保存在 Godot 用户目录的 `settings.cfg`。视觉采用自然写实方向：石材、旧木板、树皮与草地 PBR 表面，柔和日光；UI 使用炭灰与灰绿色、细边框、小圆角和轻微反馈。菜单背景来自项目场景实机渲染，游戏内菜单模糊当前世界；设置、HUD、背包与快捷栏共用 `godot/src/interface_theme.gd` 主题。
 
+设置页新增抗锯齿选择：关闭、FXAA、MSAA 2×、MSAA 4×、TAA，即时应用并保存；默认 MSAA 4×，旧设置没有该字段或值无效时使用默认值。MSAA 主要平滑几何轮廓，保留纹理清晰度；FXAA 开销较低但较柔和；TAA 改善细节闪烁，移动时可能模糊/拖影。各模式互斥，仅作用于 3D 视口，HUD 不经过额外全屏模糊。保留现有纹理 mipmap 与法线方差粗糙度过滤。
+
+实现参考 Horizon 的 `world_post.wgsl` / `graphics_ui.rs` 中 AA 模式与时间历史职责，以及 Iris `shaderpack/properties/ProgramDirectives.java` 对光影包 TAA 渲染目标的兼容处理；本项目使用 Godot 自带 AA，不移植 wgpu/Java 管线、不叠加光影包 AA。原理和取舍见 [Godot 3D 抗锯齿说明](https://docs.godotengine.org/en/stable/tutorials/3d/3d_antialiasing.html)。`visuals.gd` 输出五档静态对照与 TAA/MSAA 4× 平移过程截图。
+
 ```sh
 just demo
 ```
@@ -92,6 +96,8 @@ just demo
 
 每个方块面携带四个角的遮挡数量，在着色器内使用平滑双线性插值，消除两个三角形之间的明暗折痕；接地与凹角渐暗，共面接缝平滑，几何、法线方向和碰撞形状不变。`contact_ao_strength` 默认 0.85，设为 0 可单独关闭方块 AO。图形检查 `godot/tests/visuals.gd` 会输出石屋及台阶的同视角 `*-ao-off.png` / `*-ao-on.png`，两组对照均关闭 SSAO 以区分两种遮蔽。
 
+纹理保留现有 CC0 PBR 素材，并用连续世界坐标产生小幅明暗/粗糙度变化，避免逐块随机颜色的拼接感；衍生岩石、树皮和树叶材质也读取对应粗糙度贴图。外露凸棱通过邻格检查生成四边掩码，在约 3.5 厘米宽度内平滑偏转着色法线，保留贴图凹凸；共面内部接缝、水面和非地形网格不倒角，远处亚像素倒角逐渐衰减。该效果仅改变受光，轮廓、投影几何和碰撞仍是直角，不是实体圆角或视差映射。`bevel_width=0` / `material_variation=0` 可分别关闭倒角与材质变化；`visuals.gd` 输出 `steps-material-*`、`detail-material-*` 同视角对照。
+
 光照参考 `refs/Iris/common/src/main/java/net/irisshaders/iris/shadows/ShadowMatrices.java` 的阴影稳定性关注点及 `vertices/NormalHelper.java` 的法线处理职责，在 Godot 内采用四级混合太阳阴影、4096 阴影图、法线方差粗糙度过滤及较轻的 SSAO。保留 Forward+ / SDFGI 与 ACES；这是针对现有渲染器的独立实现，不加载 Iris shader pack、不移植其 Java/OpenGL 管线，也不宣称复现某个光影包。程序化颗粒按像素覆盖范围衰减，减少远景闪烁。
 
 - 按需扩展的方块世界，X/Z 支持正负坐标，Y 高度为 128，按 16×16×16 分段传输。新世界的出生区域也使用自然生成；先生成 64×128×64 范围，陆地不足时有限扩展搜索，探索时继续生成新区块。水平技术范围为 `[-32768, 32768)`，用于控制 f32 物理与渲染精度，垂直范围为 `[0, 128)`。
@@ -124,6 +130,8 @@ just demo
 ## 材质与视觉检查
 
 材质位于 `godot/materials/textures/`，使用 Poly Haven 的 CC0 1K JPG 颜色、OpenGL 法线和粗糙度贴图。来源、许可及 SHA-256 校验清单见 [素材说明](godot/materials/textures/LICENSE.md) 和 [sources.json](godot/materials/textures/sources.json)。纹理沿世界坐标连续铺设，箱子保留局部纹理和金属扣件。材质通过 Godot 导入，正式导出包含全部资源，不需要联网下载。
+
+沙土、黏土、雪和冰补充使用项目自有 `godot/materials/granular_normal.tres`：固定种子的 512px 无缝颗粒法线，带 mipmap，按材质调整尺度和强度。石材法线强度较高，草叶较低，雪/冰最轻；shader 的 `normal_strength` 默认 1，设为 0 只关闭法线贴图，保留 AO 和倒角。切线基按实际投影推导，归一化仅用极小的退化保护值，避免屏幕导数小时把凹凸压平。`visuals.gd` 输出 `detail-normal-*` 和 `granular-normal-*` 对照并检查像素变化；后者为沙土、黏土、雪、冰的独立材质展示，非世界生成验收。
 
 ### 资产名单
 

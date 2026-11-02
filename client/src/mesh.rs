@@ -9,6 +9,8 @@ pub struct Vertex {
     pub occlusion: f32,
     /// Four two-bit corner occluder counts, shared by both triangles (UV order).
     pub face_occlusion: u8,
+    /// Exposed convex edges in UV order: bottom, right, top, left.
+    pub bevel_mask: u8,
 }
 #[derive(Default)]
 pub struct Mesh {
@@ -26,6 +28,7 @@ impl Mesh {
                 pattern,
                 occlusion: 1.0,
                 face_occlusion: 0,
+                bevel_mask: 0,
             });
         }
     }

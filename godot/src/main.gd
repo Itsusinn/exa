@@ -130,6 +130,7 @@ func _setup_input() -> void:
 func _setup_world() -> void:
 	material = ShaderMaterial.new()
 	material.shader = MaterialShader
+	material.set_shader_parameter("granular_normal",load("res://materials/granular_normal.tres"))
 	var surfaces := {"wood":"weathered_brown_planks", "stone":"stone_brick_wall_001", "grass":"leafy_grass", "bark":"bark_brown_02"}
 	var maps := {"color":"diff", "normal":"nor_gl", "rough":"rough"}
 	for surface in surfaces:

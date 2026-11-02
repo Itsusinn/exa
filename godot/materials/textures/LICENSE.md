@@ -15,5 +15,9 @@ The JPG files are the unmodified 1K diffuse, OpenGL normal and roughness maps.
 `sources.json` records the exact download URLs, upstream MD5 and local SHA-256.
 No preview renders, website branding or example scenes are included.
 
+`../granular_normal.tres` is a project-authored procedural normal texture
+definition (FastNoiseLite seed 731), not a downloaded Poly Haven asset.
+It generates a seamless 512px normal map for sand/clay, snow and ice.
+
 `../frontier_background.png` is a screenshot rendered by this project's own
 Godot scene using these materials, captured without HUD via `tests/visuals.gd`.

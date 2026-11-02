@@ -13,10 +13,15 @@ uniform sampler2D grass_rough : filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2D bark_color : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2D bark_normal : hint_normal, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2D bark_rough : filter_linear_mipmap_anisotropic, repeat_enable;
+uniform sampler2D granular_normal : hint_normal, filter_linear_mipmap_anisotropic, repeat_enable;
+uniform float normal_strength : hint_range(0.0,1.5) = 1.0;
 varying vec3 world_position;
 varying vec3 world_normal;
 varying vec4 corner_ao;
+varying vec4 exposed_edges;
 uniform float contact_ao_strength : hint_range(0.0,1.0) = 0.85;
+uniform float bevel_width : hint_range(0.0,0.1) = 0.035;
+uniform float material_variation : hint_range(0.0,0.3) = 0.08;
 
 void vertex() {
     world_position = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
@@ -26,11 +31,37 @@ void vertex() {
     int packed_ao = int(round(UV2.y));
     corner_ao = vec4(float(packed_ao & 3),float((packed_ao >> 2) & 3),
                      float((packed_ao >> 4) & 3),float((packed_ao >> 6) & 3));
+    exposed_edges = vec4(float((packed_ao >> 8) & 1),float((packed_ao >> 9) & 1),
+                         float((packed_ao >> 10) & 1),float((packed_ao >> 11) & 1));
+}
+
+// Continuous world-space variation: no per-block tint seams or new assets.
+float material_noise(vec3 p) {
+    return (sin(p.x*1.17 + sin(p.z*0.83))*sin(p.z*1.31 + p.y*0.71)
+          + sin(p.y*1.07 + p.x*0.63)) * 0.5;
+}
+
+vec3 bevel_normal(vec3 position, vec3 normal, vec2 face_uv) {
+    vec3 dx = dFdx(position);
+    vec3 dy = dFdy(position);
+    vec2 ux = dFdx(face_uv);
+    vec2 uy = dFdy(face_uv);
+    vec3 t = cross(dy,normal)*ux.x + cross(normal,dx)*uy.x;
+    vec3 b = cross(dy,normal)*ux.y + cross(normal,dx)*uy.y;
+    t *= inversesqrt(max(dot(t,t),1e-20));
+    b *= inversesqrt(max(dot(b,b),1e-20));
+    float width = max(bevel_width,0.00001);
+    vec4 distance_to_edge = vec4(face_uv.y,1.0-face_uv.x,1.0-face_uv.y,face_uv.x);
+    vec4 weight = (1.0-smoothstep(vec4(0.0),vec4(width),distance_to_edge))*exposed_edges;
+    // Fade subpixel bevels instead of introducing distant glints.
+    float footprint = max(length(dFdx(face_uv)),length(dFdy(face_uv)));
+    weight *= (1.0-smoothstep(width,width*3.0,footprint))*float(bevel_width > 0.0);
+    return normalize(normal + t*(weight.y-weight.w) + b*(weight.z-weight.x));
 }
 
 // Derive a tangent frame from the actual surface projection. Chunk meshes do
 // not carry tangents; this also keeps rotated actor/item meshes consistent.
-vec3 surface_normal(vec3 sample_normal, vec2 coords, vec3 position, vec3 normal) {
+vec3 surface_normal(vec3 sample_normal, vec2 coords, vec3 position, vec3 normal, float strength) {
     vec3 p1 = dFdx(position);
     vec3 p2 = dFdy(position);
     vec2 uv1 = dFdx(coords);
@@ -39,8 +70,8 @@ vec3 surface_normal(vec3 sample_normal, vec2 coords, vec3 position, vec3 normal)
     vec3 p1_perp = cross(normal, p1);
     vec3 t = p2_perp * uv1.x + p1_perp * uv2.x;
     vec3 b = p2_perp * uv1.y + p1_perp * uv2.y;
-    float scale = inversesqrt(max(max(dot(t,t),dot(b,b)), 0.000001));
-    vec2 xy = (sample_normal.xy * 2.0 - 1.0) * 0.65;
+    float scale = inversesqrt(max(max(dot(t,t),dot(b,b)), 1e-20));
+    vec2 xy = (sample_normal.xy * 2.0 - 1.0) * strength * normal_strength;
     return normalize(mat3(t * scale,b * scale,normal) * vec3(xy,sqrt(max(1.0-dot(xy,xy),0.001))));
 }
 
@@ -51,6 +82,7 @@ void fragment() {
     vec2 coords = plane * 0.4;
     vec3 albedo = pow(COLOR.rgb,vec3(2.2));
     vec3 detail_normal = vec3(0.5,0.5,1.0);
+    float relief = 0.65;
     float roughness = 0.86;
     float metal = 0.0;
     if (pattern == 1 || pattern == 5 || pattern == 6) {
@@ -76,10 +108,12 @@ void fragment() {
             detail_normal = mix(detail_normal,vec3(0.5,0.5,1.0),iron);
         }
     } else if (pattern == 2) {
+        relief = 0.85;
         albedo = texture(stone_color,coords).rgb;
         detail_normal = texture(stone_normal,coords).rgb;
         roughness = texture(stone_rough,coords).r;
     } else if (pattern == 3 || pattern == 4) {
+        relief = 0.45;
         coords = plane * 0.65;
         albedo = texture(grass_color,coords).rgb;
         detail_normal = texture(grass_normal,coords).rgb;
@@ -99,10 +133,16 @@ void fragment() {
         grain = mix(grain,0.5,smoothstep(0.5,1.5,footprint*24.0));
         broad = mix(broad,0.5,smoothstep(0.5,1.5,footprint*3.0));
         albedo = tint * (0.82+grain*0.3);
-        if (pattern == 8 || pattern == 9 || pattern == 14) {
+        if (pattern == 7) {
+            coords = plane * 1.5;
+            detail_normal = texture(granular_normal,coords).rgb;
+            relief = 0.55;
+        } else if (pattern == 8 || pattern == 9 || pattern == 14) {
+            relief = 0.8;
             float rock = dot(texture(stone_color,coords).rgb,vec3(0.333));
             albedo = tint * (0.65+rock*1.4);
             detail_normal = texture(stone_normal,coords).rgb;
+            roughness = texture(stone_rough,coords).r;
             if (pattern == 9) albedo *= 0.65 + broad*0.7;
             if (pattern == 14) {
                 float vein = step(0.67,broad)*step(0.25,grain);
@@ -110,9 +150,15 @@ void fragment() {
                 metal = vein*0.25;
             }
         } else if (pattern == 10) {
+            coords = plane * 1.2;
+            detail_normal = texture(granular_normal,coords).rgb;
+            relief = 0.25;
             roughness = 0.92;
             albedo = tint*(0.94+grain*0.06);
         } else if (pattern == 11) {
+            coords = plane * 0.5;
+            detail_normal = texture(granular_normal,coords).rgb;
+            relief = 0.15;
             roughness = 0.32;
             albedo = tint*(0.85+broad*0.15);
         } else if (pattern == 12) {
@@ -120,12 +166,20 @@ void fragment() {
             float bark = dot(texture(bark_color,coords).rgb,vec3(0.333));
             albedo = tint*(0.55+bark*1.8);
             detail_normal = texture(bark_normal,coords).rgb;
+            roughness = texture(bark_rough,coords).r;
             if (COLOR.r>0.7) albedo *= 1.0-step(0.87,fract(plane.y*2.0))*step(0.4,broad)*0.72;
         } else if (pattern == 13) {
+            relief = 0.45;
             float leaf = dot(texture(grass_color,coords).rgb,vec3(0.333));
             albedo = tint*(0.6+leaf*1.8);
             detail_normal = texture(grass_normal,coords).rgb;
+            roughness = texture(grass_rough,coords).r;
         }
+    }
+    if (pattern != 0 && pattern != 5 && pattern != 6) {
+        float variation = material_noise(world_position*0.65);
+        albedo *= 1.0 + material_variation*variation;
+        roughness += material_variation*variation*0.3;
     }
     ALBEDO = albedo;
     // Smooth bilinear interpolation has zero slope at shared block boundaries;
@@ -135,7 +189,9 @@ void fragment() {
                           mix(corner_ao.w,corner_ao.z,blend.x),blend.y);
     AO = 1.0 - occluders * 0.18 * contact_ao_strength;
     AO_LIGHT_AFFECT = 0.2;
-    vec3 mapped_normal = surface_normal(detail_normal,coords,VERTEX,NORMAL);
+    vec3 mapped_normal = surface_normal(detail_normal,coords,VERTEX,NORMAL,relief);
+    // Preserve the normal-map relief while rounding only exposed voxel edges.
+    mapped_normal = normalize(mapped_normal + bevel_normal(VERTEX,NORMAL,UV) - NORMAL);
     // Increase the specular lobe width for unresolved normal detail.
     float variance = dot(dFdx(mapped_normal),dFdx(mapped_normal)) + dot(dFdy(mapped_normal),dFdy(mapped_normal));
     NORMAL = mapped_normal;
