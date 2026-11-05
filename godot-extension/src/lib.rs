@@ -10,7 +10,8 @@ unsafe impl ExtensionLibrary for GameExtension {}
 #[derive(GodotClass)]
 #[class(base=Node, init)]
 struct GameBridge {
-    base: Base<Node>,
+    // Avoid gdext 0.5.5 generating `base: base`, flagged by Clippy 1.99 in macros.
+    godot_base: Base<Node>,
     session: Session,
     movement: Movement,
     attack: bool,

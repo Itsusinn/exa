@@ -46,6 +46,8 @@ Windows 导出使用标准模板与纯运行时暂存项目，排除插件、.NE
 
 ## 验证状态与待办
 
+2026-11-05 首次远端发布兼容修复：手动发布运行 `42005206390` 在 Rust 1.99.0 的严格 Clippy 阶段失败；`godot = 0.5.5` 自动初始化生成 `base: base`，触发 [上游已记录的宏误报](https://github.com/godot-rust/gdext/issues/1713)。仅将桥接类的私有 `Base<Node>` 字段改名为 `godot_base`，由同一宏按类型识别；保留初始化、生命周期、协议和玩法行为，不关闭 lint。已用 Rust 1.99.0 通过全 workspace/all-targets 严格 Clippy 和格式检查，日志 `target/ci-clippy-1.99.log`；发布运行仍需重新完成后续测试与导出。
+
 2026-11-05 手动发布 CI：新增 `.github/workflows/release.yml`，仅 `workflow_dispatch` 触发。选择分支并填写版本标签，可选预发行/草稿；Windows x64 串行执行 Rust 检查/测试、Godot 场景与联机检查，再导出 release 客户端及独立服务端，打包 ZIP 和 SHA-256 清单。发布任务单独获得写权限，标签绑定实际构建提交，已有 Release 不覆盖。修复运行时暂存遗漏 `godot/assets/`，确保工业 GLB 随包导出。标准发布模板禁用路径/脚本覆盖，因此实际发布包以正常入口验证离线漫游、原生扩展及连接独立服务端，完整场景断言在标准引擎中执行，不加入发布版测试入口。
 
 本地验证：actionlint、工作流 PowerShell 语法、`just scripts-check` 和两项脚本测试通过；隔离源码副本完成 release 导出、独立服务端构建、工作流中的发布包运行检查及 ZIP 打包检查。Godot smoke（含单人启停/保存）、908 种工业模型和双客户端 QUIC 场景通过，双客户端检查使用本次 release 服务端。用户原有 debug 服务端和游戏仍在运行，未关闭或替换其可执行文件/DLL；本地直接启动隔离 release 服务端执行联机场景，未把被占用导致无法重新链接的 `just godot-multiplayer` 入口记为通过。证据为 `target/ci-{export-release,server-build,runtime-checks-final,godot-smoke,godot-industry-models}.log`、`target/ci-godot-network/` 和 `target/ci-release-source/target/release-checks/`。本轮未修改游戏 Rust 逻辑，未重跑全量 workspace 测试；CI 配置保留全量检查和测试作为发布门槛。尚未提交、推送或在 GitHub 执行该工作流，也未创建远端 Release；未新增 GPU/完整手动输入验收。
