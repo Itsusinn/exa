@@ -1,6 +1,6 @@
 //! Historical map used only by migration and fixed-scenario unit tests.
-use game_simulation::grid::Grid;
-use protocol::*;
+use exa_protocol::*;
+use exa_simulation::grid::Grid;
 pub fn generate(seed: u64) -> Grid {
     let mut map = Grid::empty();
     for z in 0..64 {

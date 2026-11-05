@@ -1,5 +1,5 @@
 //! Deterministic, host-independent character movement shared by authority and prediction.
-use protocol::{Body, PlayerInput};
+use exa_protocol::{Body, PlayerInput};
 pub mod equipment;
 pub mod grid;
 mod physics;
@@ -196,8 +196,8 @@ pub fn clear_line(a: [f32; 3], b: [f32; 3], solid: impl Fn([i32; 3]) -> bool) ->
 pub fn container_reachable(map: &grid::Grid, feet: [f32; 3], target: [i32; 3]) -> bool {
     let eye = [feet[0], feet[1] + EYE_HEIGHT, feet[2]];
     let center = target.map(|v| v as f32 + 0.5);
-    map.get(target) == protocol::CHEST
-        && distance(eye, center) <= protocol::CONTAINER_REACH
+    map.get(target) == exa_protocol::CHEST
+        && distance(eye, center) <= exa_protocol::CONTAINER_REACH
         && clear_line_grid_except(eye, center, map, Some(target))
 }
 
@@ -342,7 +342,7 @@ mod tests {
     #[test]
     fn chest_targeting_stops_at_walls_and_respects_reach() {
         let mut map = grid::Grid::empty();
-        map.set([10, 7, 10], protocol::CHEST);
+        map.set([10, 7, 10], exa_protocol::CHEST);
         let feet = [10.5, 7.0, 12.5];
         let pitch = (-1.08f32).atan2(2.0);
         assert_eq!(
@@ -353,10 +353,10 @@ mod tests {
             targeted_container(&map, feet, std::f32::consts::PI, pitch),
             None
         );
-        map.set([10, 8, 11], protocol::STONE);
+        map.set([10, 8, 11], exa_protocol::STONE);
         assert_eq!(targeted_container(&map, feet, 0.0, pitch), None);
         assert!(!container_reachable(&map, feet, [10, 7, 10]));
-        map.set([10, 8, 11], protocol::AIR);
+        map.set([10, 8, 11], exa_protocol::AIR);
         assert!(!container_reachable(&map, [10.5, 7.0, 15.5], [10, 7, 10]));
         assert!(map.solid([10, 7, 10]));
     }

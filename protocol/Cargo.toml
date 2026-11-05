@@ -1,5 +1,5 @@
 [package]
-name = "protocol"
+name = "exa-protocol"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

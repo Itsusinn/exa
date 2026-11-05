@@ -5,7 +5,7 @@
 //! eliminate temperature and vapour composition. Constant molar overflow is
 //! only a seed, never the published model. The column has no world inventory.
 use crate::thermo;
-use protocol::{DistillationResult, DistillationSpec, DistillationStage};
+use exa_protocol::{DistillationResult, DistillationSpec, DistillationStage};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 

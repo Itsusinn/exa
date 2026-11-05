@@ -1,5 +1,5 @@
 use super::*;
-use game_simulation::{inventory::insert, overlaps, targeting::target_block};
+use exa_simulation::{inventory::insert, overlaps, targeting::target_block};
 
 impl VoxelWorld {
     pub fn edit_block(&mut self, id: u32, command: BlockEdit) {
@@ -37,7 +37,7 @@ impl VoxelWorld {
             anyhow::ensure!(item.quantity > 0 && hit.normal != [0; 3], "无法放置方块。");
             let position = std::array::from_fn(|i| hit.position[i] + hit.normal[i]);
             anyhow::ensure!(
-                protocol::valid_voxel(position)
+                exa_protocol::valid_voxel(position)
                     && position[1] > 0
                     && self.terrain.get(position) == AIR
                     && !self.equipment_occupies(position),

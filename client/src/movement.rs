@@ -1,6 +1,6 @@
 use crate::session::Session;
-use game_simulation::DT;
-use protocol::PlayerInput;
+use exa_protocol::PlayerInput;
+use exa_simulation::DT;
 
 /// Render one simulation step behind, interpolating only completed predictions.
 /// Mouse look is deliberately independent so turning stays immediate.
@@ -58,8 +58,8 @@ impl Movement {
 mod tests {
     use super::*;
     use crate::network_client::{NetworkEvent, Transport};
-    use game_simulation::{distance, overlaps, SPEED};
-    use protocol::{ClientMessage, ServerMessage, Snapshot3d};
+    use exa_protocol::{ClientMessage, ServerMessage, Snapshot3d};
+    use exa_simulation::{distance, overlaps, SPEED};
 
     struct Queue {
         full: bool,
@@ -203,7 +203,7 @@ mod tests {
             actors: session.model.actors.clone(),
             items: vec![],
             hp: 100,
-            inventory: protocol::PlayerInventory::default(),
+            inventory: exa_protocol::PlayerInventory::default(),
             log: vec![],
         }));
         movement.advance(&mut session, 0.0, forward);

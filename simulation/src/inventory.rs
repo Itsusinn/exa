@@ -1,5 +1,7 @@
 //! Pure slot operations. Callers commit a validated copy atomically.
-use protocol::{InventoryEntry, PlayerInventory, HOTBAR_SLOTS, INVENTORY_SLOTS, ITEM_STACK_LIMIT};
+use exa_protocol::{
+    InventoryEntry, PlayerInventory, HOTBAR_SLOTS, INVENTORY_SLOTS, ITEM_STACK_LIMIT,
+};
 
 pub fn insert(slots: &mut [Option<InventoryEntry>], item: &InventoryEntry) -> u32 {
     let mut left = item.quantity;

@@ -1,8 +1,8 @@
-use client::network_client::{
+use exa_client::network_client::{
     connect_endpoint, read_message, write_message, NetworkEvent, QuicSession, Transport,
 };
-use protocol::*;
-use server::{
+use exa_protocol::*;
+use exa_server::{
     network::{make_server_endpoint, serve_endpoint},
     voxel::VoxelWorld,
 };
@@ -35,7 +35,7 @@ async fn stalled_authority_bounds_client_inputs_and_resumes_without_disconnect()
         let (_endpoint, connection) = connect_endpoint(address, cert).await.unwrap();
         let (mut send, mut recv) = connection.open_bi().await.unwrap();
         let id = login(&mut send, &mut recv, "Flow control").await;
-        let mut model = game_client_core::voxel::Client3d::default();
+        let mut model = exa_client_core::voxel::Client3d::default();
         model.apply(ServerMessage::Welcome3d {
             player_id: id,
             seed: 12345,
@@ -67,7 +67,7 @@ async fn stalled_authority_bounds_client_inputs_and_resumes_without_disconnect()
                 } else {
                     assert!(result.is_err());
                 }
-                tokio::time::sleep(Duration::from_secs_f32(game_simulation::DT)).await;
+                tokio::time::sleep(Duration::from_secs_f32(exa_simulation::DT)).await;
             }
             assert_eq!(last_sent - start_seq, MAX_PENDING_INPUTS as u32);
             assert_eq!(model.pending.len(), MAX_PENDING_INPUTS);
@@ -130,8 +130,7 @@ async fn player_commands_sync_flight_teleport_and_private_feedback_over_quic() {
                         || e.text.contains("已返回出生点")));
                     saw_spawn |= saw_destination
                         && s.actors.iter().any(|a| {
-                            a.id == id
-                                && game_simulation::distance(a.position, initial_spawn) < 0.02
+                            a.id == id && exa_simulation::distance(a.position, initial_spawn) < 0.02
                         });
                     saw_destination |= s
                         .actors
@@ -183,7 +182,7 @@ async fn player_commands_sync_flight_teleport_and_private_feedback_over_quic() {
         )
         .await
         .unwrap();
-        let mut model = game_client_core::voxel::Client3d::default();
+        let mut model = exa_client_core::voxel::Client3d::default();
         model.apply(ServerMessage::Welcome3d {
             player_id: id,
             seed: 12345,
@@ -246,7 +245,7 @@ async fn player_commands_sync_flight_teleport_and_private_feedback_over_quic() {
         loop {
             model.apply(read_message(&mut recv).await.unwrap());
             assert!(model.terrain.blocks.len() <= MAX_LOADED_SECTIONS);
-            if game_simulation::distance(model.body.position, initial_spawn) < 0.02
+            if exa_simulation::distance(model.body.position, initial_spawn) < 0.02
                 && model.terrain.nearby_known(model.body.position)
             {
                 break;
@@ -309,7 +308,7 @@ async fn exploration_streams_generated_columns_unloads_and_reconnects_at_negativ
         let (_e, c) = connect_endpoint(address, cert.clone()).await.unwrap();
         let (mut send, mut recv) = c.open_bi().await.unwrap();
         let id = login_uuid(&mut send, &mut recv, "Explorer", uuid).await;
-        let mut model = game_client_core::voxel::Client3d::default();
+        let mut model = exa_client_core::voxel::Client3d::default();
         model.apply(ServerMessage::Welcome3d {
             player_id: id,
             seed: 12345,
@@ -459,7 +458,7 @@ async fn block_edits_reach_both_clients_and_consume_the_selected_stack() {
         target[i] as f32 + 0.5
             - feet[i]
             - if i == 1 {
-                game_simulation::EYE_HEIGHT
+                exa_simulation::EYE_HEIGHT
             } else {
                 0.0
             }
@@ -493,7 +492,7 @@ async fn block_edits_reach_both_clients_and_consume_the_selected_stack() {
                     );
                 }
                 if let ServerMessage::Chunk3d { origin, blocks } = message {
-                    let mut map = game_simulation::grid::Grid::unknown();
+                    let mut map = exa_simulation::grid::Grid::unknown();
                     if map.apply_chunk(origin, &blocks) && map.get(cell) == block {
                         break;
                     }
@@ -516,7 +515,7 @@ async fn block_edits_reach_both_clients_and_consume_the_selected_stack() {
     let anchor = [target[0], target[1] - 1, target[2]];
     let eye = [
         current.body.position[0],
-        current.body.position[1] + game_simulation::EYE_HEIGHT,
+        current.body.position[1] + exa_simulation::EYE_HEIGHT,
         current.body.position[2],
     ];
     let offset: [f32; 3] = std::array::from_fn(|i| anchor[i] as f32 + 0.5 - eye[i]);
@@ -525,7 +524,7 @@ async fn block_edits_reach_both_clients_and_consume_the_selected_stack() {
     let (hit, expected_anchor) = {
         let w = manager.lock().await;
         (
-            game_simulation::targeting::target_block(&w.terrain, current.body.position, yaw, pitch)
+            exa_simulation::targeting::target_block(&w.terrain, current.body.position, yaw, pitch)
                 .unwrap(),
             w.terrain.get(anchor),
         )
@@ -737,9 +736,9 @@ async fn shared_chest_transfers_over_quic_reject_stale_requests_and_survive_reop
                         let p = [x as f32 + 0.5, y as f32, z as f32 + 0.5];
                         if w.terrain.solid([x, y - 1, z])
                             && w.terrain.get([x, y - 1, z]) != WATER
-                            && !game_simulation::overlaps(p, &|v| w.terrain.solid(v))
-                            && game_simulation::distance(p, alice.body.position) > 1.5
-                            && game_simulation::container_reachable(&w.terrain, p, position)
+                            && !exa_simulation::overlaps(p, &|v| w.terrain.solid(v))
+                            && exa_simulation::distance(p, alice.body.position) > 1.5
+                            && exa_simulation::container_reachable(&w.terrain, p, position)
                         {
                             candidates.push(p);
                         }
@@ -760,7 +759,7 @@ async fn shared_chest_transfers_over_quic_reject_stale_requests_and_survive_reop
         .unwrap();
         loop {
             let state = snapshot(&mut r2, 0).await;
-            if game_simulation::distance(state.body.position, approach) < 0.1 {
+            if exa_simulation::distance(state.body.position, approach) < 0.1 {
                 break;
             }
         }
@@ -879,7 +878,7 @@ async fn two_clients_receive_voxels_move_jump_chat_and_disconnect_over_verified_
         let (_e1, c1) = connect_endpoint(address, cert.clone()).await.unwrap();
         let (mut s1, mut r1) = c1.open_bi().await.unwrap();
         let id1 = login(&mut s1, &mut r1, "Alice").await;
-        let mut map = game_simulation::grid::Grid::unknown();
+        let mut map = exa_simulation::grid::Grid::unknown();
         let mut chunks = 0;
         let initial = loop {
             match read_message(&mut r1).await.unwrap() {

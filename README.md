@@ -1,6 +1,10 @@
-# Dungeon 3D — Godot + Rust
+# exa — Godot + Rust
 
 桌面优先的第一人称多人方块游戏。Godot **Forward+ + SDFGI** 负责画面、场景、输入和 UI；Rust 通过 GDExtension 保留模拟、客户端预测和经过证书验证的 Quinn/QUIC。独立 Rust 服务端使用 hecs，不依赖 Godot。
+
+项目与仓库统一命名为 **exa**，仓库地址为 [Itsusinn/exa](https://github.com/Itsusinn/exa)。客户端为 `exa.exe`，独立服务端为 `exa-server.exe`，扩展为 `exa_godot.dll`；Cargo 包统一使用 `exa-` 前缀，源码模块目录继续按职责组织。`v0.1.0` 是改名前发布，历史附件保留原名称与校验值；新发布使用 exa 名称。
+
+配置统一使用 `EXA_*`，仍兼容同名后缀的旧 `CDDA_*`；两者同时设置时以 `EXA_*` 为准。新安装的玩家身份位于 `%APPDATA%/exa/client.uuid`，若仅有旧 `%APPDATA%/Dungeon3D/client.uuid` 则继续使用原文件，损坏时仍报错，不能因改名重新生成角色身份。Godot 新用户目录为 `%APPDATA%/Godot/app_userdata/exa/`；设置与蒸馏设计文件在新目录不存在时继续读取、写入旧 `Dungeon 3D/` 中对应文件，不移动或覆盖旧文件。世界仍使用 `save/world3d.bin`，存档标记、格式与协议版本不因命名变更而改变。
 
 客户端统一使用 Godot，旧桌面入口和自研渲染器已移除。尚待完整实机键鼠及窗口交互验收，架构与验收状态见 [PLAN.md](PLAN.md)。
 
@@ -21,7 +25,7 @@ just client
 just dev
 ```
 
-`just dev` 先构建，等待本次服务端写好证书并开始监听，再启动客户端；关闭客户端后，服务端正常保存并退出。支持 `CDDA_BIND`（默认 `127.0.0.1:9876`，端口不能为 0）、`CDDA_SAVE_PATH`、`CDDA_CERT_PATH` 和 `CDDA_IDENTITY_PATH`。绑定 `0.0.0.0` 或 `::` 时，本机客户端使用对应回环地址连接。启动失败会报错，不会连接已有的其他服务端。该 Windows 启动器为 `scripts/dev.rs` Cargo script，需要额外安装 `rustup toolchain install nightly --profile minimal`；游戏本身仍用仓库的 stable 工具链构建。终端显示两端日志，启动器强制 `server=info` 以确认就绪；Ctrl+C 会关闭客户端并通知服务端保存。
+`just dev` 先构建，等待本次服务端写好证书并开始监听，再启动客户端；关闭客户端后，服务端正常保存并退出。支持 `EXA_BIND`（默认 `127.0.0.1:9876`，端口不能为 0）、`EXA_SAVE_PATH`、`EXA_CERT_PATH` 和 `EXA_IDENTITY_PATH`。绑定 `0.0.0.0` 或 `::` 时，本机客户端使用对应回环地址连接。启动失败会报错，不会连接已有的其他服务端。该 Windows 启动器为 `scripts/dev.rs` Cargo script，需要额外安装 `rustup toolchain install nightly --profile minimal`；游戏本身仍用仓库的 stable 工具链构建。终端显示两端日志，启动器强制 `exa_server=info` 以确认就绪；Ctrl+C 会关闭客户端并通知服务端保存。
 
 客户端启动后显示主界面：**单人游戏、多人游戏、设置、退出游戏**。单人游戏自动在后台启动内置 Rust 权威服务端，通过回环地址的随机端口和经过证书验证的 QUIC 连接；无需单独运行 `just server`，支持现有战斗、敌人、拾取和背包。多人游戏页填写地址、昵称和服务端当前证书，支持同服最多 16 人。
 
@@ -143,8 +147,8 @@ just demo
 | Stone Brick Wall 001 | 石墙与石材表面 | `godot/materials/textures/stone_brick_wall_001_*_1k.jpg` | [Poly Haven](https://polyhaven.com/a/stone_brick_wall_001)，CC0 1.0 |
 | Leafy Grass | 草地；经着色用于泥土与方块树冠 | `godot/materials/textures/leafy_grass_*_1k.jpg` | [Poly Haven](https://polyhaven.com/a/leafy_grass)，CC0 1.0 |
 | Bark Brown 02 | 树干表面 | `godot/materials/textures/bark_brown_02_*_1k.jpg` | [Poly Haven](https://polyhaven.com/a/bark_brown_02)，CC0 1.0 |
-| 主菜单场景背景 | 当前主菜单背景 | [frontier_background.png](godot/materials/frontier_background.png) | 项目场景自行渲染，使用上述 CC0 材质 |
-| 旧版工业场景插画 | 保留的旧版背景，当前菜单未使用 | [frontier_backdrop.svg](godot/src/frontier_backdrop.svg) | 项目自制 SVG |
+| 主菜单场景背景 | 当前主菜单背景 | [exa_background.png](godot/materials/exa_background.png) | 项目场景自行渲染，使用上述 CC0 材质 |
+| 旧版工业场景插画 | 保留的旧版背景，当前菜单未使用 | [exa_backdrop.svg](godot/src/exa_backdrop.svg) | 项目自制 SVG |
 
 每套第三方材质包含 `diff`（颜色）、`nor_gl`（OpenGL 法线）和 `rough`（粗糙度）三张 1K JPG，共 12 张原始贴图。下载日期为 2026-10-27，许可见 [Poly Haven 资产许可](https://polyhaven.com/license) 与 [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/legalcode)。菜单背景可通过 `godot/tests/visuals.gd` 的无 HUD 截图重新生成。
 
@@ -158,7 +162,7 @@ just demo
 & $env:GODOT_BIN --path godot --script res://tests/visuals.gd
 ```
 
-输出默认位于 `target/visual-review/`，可用 `CDDA_VISUAL_PATH` 指定目录。该检查使用离线展示场景，临时启用 GI 和 72° 视野，不读写真实存档或覆盖用户设置；需要实际图形环境，不能用 headless 代替画面验证。
+输出默认位于 `target/visual-review/`，可用 `EXA_VISUAL_PATH` 指定目录。该检查使用离线展示场景，临时启用 GI 和 72° 视野，不读写真实存档或覆盖用户设置；需要实际图形环境，不能用 headless 代替画面验证。
 
 ## 工业设备、相平衡与换热
 
@@ -201,7 +205,7 @@ just demo
 
 工业计算使用独立的 0.2 秒切片，服务端最多运行一个后台任务，不积压补算任务；玩家运动仍为 30 Hz。计算过慢时工业时间减慢，不追赶积压时间。结果提交前核对事实修订号、设备身份与守恒，建造、拆除、注排或改设置后，旧任务结果被丢弃。客户端卸载远处区块不停止工业计算；退出时等待已有任务结束并丢弃未提交结果，离线不补算。
 
-验证入口为 `just godot-industry`（headless）及 `cargo test -p client --test industry --jobs 2`（真实 QUIC）。实际图形检查使用 `just godot-industry-graphics`，启动器使用 console 可执行文件等待退出并返回验证结果；测试生成 `target/` 下的隔离世界和截图，不修改真实存档或用户设置。具体通过项与未验收范围见 PLAN。
+验证入口为 `just godot-industry`（headless）及 `cargo test -p exa-client --test industry --jobs 2`（真实 QUIC）。实际图形检查使用 `just godot-industry-graphics`，启动器使用 console 可执行文件等待退出并返回验证结果；测试生成 `target/` 下的隔离世界和截图，不修改真实存档或用户设置。具体通过项与未验收范围见 PLAN。
 
 最小回路验证使用 `just godot-industry-flow` 或 `just godot-industry-flow-graphics`，先执行真实 QUIC 回路测试，再复制隔离存档运行 Godot 场景检查。
 
@@ -286,7 +290,7 @@ flowchart LR
 参考 [Minecraft Structure definition](https://minecraft.wiki/w/Structure_definition) 的生态、生成阶段、地形适配和模板池分工，以及原版村庄的 [结构定义](https://raw.githubusercontent.com/misode/mcmeta/data/data/minecraft/worldgen/structure/village_plains.json) / [结构集](https://raw.githubusercontent.com/misode/mcmeta/data/data/minecraft/worldgen/structure_set/villages.json)。本项目使用自己的 JSON 子集与方块模板，不兼容 Minecraft 数据包、NBT 或完整递归 jigsaw。
 
 - `server/assets/structures/definitions.json` 定义区域间距、分离距离、盐值、结构权重、生态、坡度限制、整平范围和模板组合。
-- `server/assets/structures/templates.json` 定义可复用模板：按顺序执行包含端点的方块长方体填充，支持显式空气、四向旋转与加权模板池。方块名沿用 `protocol::BLOCK_IDS`。两个 JSON 随 Rust 二进制嵌入，修改后重新构建；启动时验证格式、引用、边界和方块名，非法配置报错。无需运行时下载资源。
+- `server/assets/structures/templates.json` 定义可复用模板：按顺序执行包含端点的方块长方体填充，支持显式空气、四向旋转与加权模板池。方块名沿用 `exa_protocol::BLOCK_IDS`。两个 JSON 随 Rust 二进制嵌入，修改后重新构建；启动时验证格式、引用、边界和方块名，非法配置报错。无需运行时下载资源。
 - 默认每 24×24 区块区域选一个候选锚点，分离参数 8；符合生态的结构按村庄 3、城堡 1 加权选择，随后拒绝水域、陡坡与越界位置，因此不是每个候选都会落地。结构覆盖最多 49×49 格，内部整平，外缘 4 格渐变；只填充表层地基，保留深层洞穴。
 - 按种子和绝对坐标计算完整计划，仅写当前新生成区块；正负坐标、探索顺序、分批保存重开都保持一致。结构直接保存为普通方块，沿用区块版本 3，无独立结构存档。已探索区块与玩家改造不回填、不重建；旧探索边界处可能出现部分结构/地形接缝，向完整的未探索区域探索可看到完整建筑。未来更改生成定义也只影响新生成区块。
 
@@ -298,26 +302,26 @@ just godot-structures
 
 ## 网络与存档
 
-- 默认监听 `127.0.0.1:9876`；局域网可设置 `CDDA_BIND=0.0.0.0:9876`。
-- 服务端每次启动生成 TLS 证书，默认写入 `save/server.cert.der`，可用 `CDDA_CERT_PATH` 改路径。客户端必须使用服务端本次生成的证书，不跳过验证；远程玩家通过 `--cert FILE.der` 指定证书。
+- 默认监听 `127.0.0.1:9876`；局域网可设置 `EXA_BIND=0.0.0.0:9876`。
+- 服务端每次启动生成 TLS 证书，默认写入 `save/server.cert.der`，可用 `EXA_CERT_PATH` 改路径。客户端必须使用服务端本次生成的证书，不跳过验证；远程玩家通过 `--cert FILE.der` 指定证书。
 - 协议版本为 **18**，新增回流实体设备与九线工艺接管报告，保留蒸馏塔设计与三罐接管报告；保留有界蒸馏设计请求/取消/结果消息；保留罐体规格和换热单元检查命令/回执；保留管道接头、管架及两点铺管；保留密闭罐、双流换热、128 格高度、飞行、区块列卸载、客户端稳定 UUID、镜头朝向和物品栏版本校验。版本 17 及更旧客户端不能加入，客户端与服务端须同时更新。世界存档为版本 13。
 - `World3d.seq` 是该玩家最后**执行**的输入序号。客户端只有在有界发送队列接受输入后才预测；收到快照先应用权威位置与速度，再重放未确认输入。客户端最多保留 16 条未确认输入（包含传输中的输入），与服务端输入队列容量一致；达到上限时暂停发送和预测，收到执行确认后恢复，避免服务端卡顿或网络延迟导致正常客户端积压断线。服务端每 tick 最多消费每人一条输入，拒绝无效数值、乱序和超量积压。
 - 慢客户端的队列不能阻塞广播；网络读取任务持续拥有接收流，不会被 UI 的发送取消。客户端每帧处理网络消息数量有上限。
 - 默认存档为 **`save/world3d.bin`**，保留 `DNG3D001` 标记，格式版本 **13**。MessagePack 清单保存高度、种子、已生成区块列坐标和归档引用；区块、玩家、生物实体及工业设备分别位于 `world3d.chunks/`、`world3d.players/`、`world3d.entities/`、`world3d.industry/`，文件名均为 `<同一批次 UUID>.rkyv`，由 rkyv + memmap2 读写。先写完并同步四个不可变归档，再原子替换世界清单；保存中断仍加载上一个完整批次。工业归档版本 **6**（`DNGIND06`）保存蒸馏塔设计、设备稳定身份、罐体规格、朝向、显式管接头、控制、组分摩尔数、内能、物性修订、下一设备 ID 和完整交换账目。烃能量允许为负，内部换热不记成外部热源。运行读数、管网拓扑、铺管草稿与会话请求缓存不持久化；每世界最多 1024 台设备。
 - 读取版本 1 地图时验证并补箱，备份为 `world3d.v1.bak`；版本 2 保留箱子，备份为 `world3d.v2.bak`；版本 3–6 验证其原有归档后备份为对应 `.vN.bak`，独立复制存在的归档目录。已有不同备份时使用编号后缀。补箱优先位置为 `(26, 7, 30)`，被占用则选择安全空位，不覆盖原方块。备份失败或无安全空位则停止加载，原文件不变；下一次成功保存才升级到版本 13。版本 1–4 没有怪物记录，迁移时按原规则初始化三只怪物，此后保存其状态和死亡后的缺席。版本 5 及以上保留既有怪物缺席记录，原区域不会重新生成。
-- 原来的 `save/world.bin` **不会自动迁移或覆盖**。把二维文件传给 `CDDA_SAVE_PATH` 会明确报错并停止启动；若要继续保留旧二维地图，先保留原文件，再使用新的三维存档路径。当前没有二维到三维迁移命令。
+- 原来的 `save/world.bin` **不会自动迁移或覆盖**。把二维文件传给 `EXA_SAVE_PATH` 会明确报错并停止启动；若要继续保留旧二维地图，先保留原文件，再使用新的三维存档路径。当前没有二维到三维迁移命令。
 - 当前持久化地图、箱内物品、地面物品、怪物，以及所有已访问角色的生命、位置、速度、朝向、背包槽位和选中快捷栏；离线角色也会保留。每 30 秒、玩家断线及服务端正常退出时共同保存。强制终止最多回退到上次成功提交的批次。怪物恢复原位置、运动、朝向、生命、UUID、网络 ID 和攻击冷却；已击杀怪物不会在读档时重新生成。玩家恢复位置被地形或其他实体占用时改用安全出生点，保留背包；玩家死亡状态按原有规则复活。
-- 客户端首次连接在 Windows `%APPDATA%/Dungeon3D/client.uuid` 生成随机 UUID，可用 `CDDA_IDENTITY_PATH` 指定独立身份文件。改昵称仍恢复同一角色，同名不同 UUID 相互独立，同一 UUID 同时上线会被拒绝。身份文件损坏会明确报错，不会自动换号；换电脑需复制原身份文件。这是角色标识，不是账号认证。
+- 客户端首次连接在 Windows `%APPDATA%/exa/client.uuid` 生成随机 UUID（已有旧身份按上文兼容读取），可用 `EXA_IDENTITY_PATH` 指定独立身份文件。改昵称仍恢复同一角色，同名不同 UUID 相互独立，同一 UUID 同时上线会被拒绝。身份文件损坏会明确报错，不会自动换号；换电脑需复制原身份文件。这是角色标识，不是账号认证。
 - 版本 7 完整验证后备份为 `world3d.v7.bak`，对应归档独立复制到 `.v7.bak.chunks/`、`.v7.bak.players/`、`.v7.bak.entities/`；工业状态初始化为空。版本 1–6 保留原迁移规则，最终在下一次成功保存时写入版本 13。回退时恢复旧版清单及其完整归档目录。
 - 版本 8 使用工业 v1 的精确 rkyv 布局读取，完整验证后备份清单与四类归档为 `.v8.bak*`。原设备 ID、朝向、物料和内能保留；补默认控制和从零开始的历史账目。未知旧物料保留并暂停计算。
 - 版本 9 使用工业 v2 的精确布局读取，备份为 `.v9.bak*`。旧水库存、控制和账目保留；新增热设置为空、烃与加热账目为零。版本 10 使用工业 v3 的精确布局读取，备份为 `.v10.bak*`，原热库存、内能、控制、物性修订和账目均保留；旧管接头缺省为空，继续按原轴向解释。版本 11 使用工业 v4 的精确布局读取，备份为 `.v11.bak*`，补默认罐体规格并保留显式管接头、热库存与全部账目。版本 12 使用工业 v5 精确布局读取并完整备份为 `.v12.bak*`，原罐体规格、热库存、控制与账目保留，旧设备的塔体设计为空。版本 1–12 最终均保存为版本 13，旧程序不能读取新版。
 - 手动备份版本 13 时须一起复制清单及四类归档目录；旧批次不自动清理。损坏、缺失、批次不一致、未知设备、重复身份、非法数值或重叠均阻止加载。只有同格一根水平管与一个单管架可共存，重复管/架及其他重叠都拒绝。工业归档绑定 `butane-pentane-pr78-cp298-r1` 物性修订，不匹配时拒绝加载，不能用新公式解释旧内能。
 
-单人模式同样使用 `save/world3d.bin`（相对于启动工作目录），可通过 `CDDA_SAVE_PATH` 指定其他路径。返回主界面、菜单退出和窗口关闭都会先等待后台共同保存、关闭本地服务端并清理网络任务；保存错误会显示在菜单中而不会自动退出。独立服务端和单人模式使用相同的排他世界锁，阻止同时打开同一存档。内置证书只在内存中传递，不覆盖独立服务端的证书文件。
+单人模式同样使用 `save/world3d.bin`（相对于启动工作目录），可通过 `EXA_SAVE_PATH` 指定其他路径。返回主界面、菜单退出和窗口关闭都会先等待后台共同保存、关闭本地服务端并清理网络任务；保存错误会显示在菜单中而不会自动退出。独立服务端和单人模式使用相同的排他世界锁，阻止同时打开同一存档。内置证书只在内存中传递，不覆盖独立服务端的证书文件。
 
 客户端参数：`--server IP:PORT`、`--cert FILE.der`、`--name NAME`、`--connect`、`--singleplayer`、`--demo`、`--capture FILE.png`、`--capture-frames 1..4096`（默认 64）、`--lighting gi|direct`（默认 gi）、`--fov 55..100`（默认 72°）、`--yaw DEGREES`。直接运行 Godot 或导出程序时，游戏参数放在 `--` 后；通过 `scripts/godot.rs` 时由脚本添加。相对证书路径相对于进程工作目录，远程/导出运行建议使用绝对路径。
 
-`--capture` 配合 `--demo`、`--connect` 或 `--singleplayer` 时，在完整区块数据和玩家状态到达后累计指定帧数，让光照历史收敛，再截图并退出；整体 120 秒未完成则报错。未指定游戏模式时截取主界面。设置页可开关 SDFGI；关闭后仍使用 Forward+，不是切换到兼容渲染器。`CDDA_RUN_SECONDS` 可使测试服务器定时正常退出。
+`--capture` 配合 `--demo`、`--connect` 或 `--singleplayer` 时，在完整区块数据和玩家状态到达后累计指定帧数，让光照历史收敛，再截图并退出；整体 120 秒未完成则报错。未指定游戏模式时截取主界面。设置页可开关 SDFGI；关闭后仍使用 Forward+，不是切换到兼容渲染器。`EXA_RUN_SECONDS` 可使测试服务器定时正常退出。
 
 ## 模块边界
 
@@ -334,11 +338,11 @@ just godot-structures
 
 区块流送的图形回归可执行 `just godot-streaming`：先用真实 QUIC 在隔离平坦跑道上走过 x=64 和 x=0、保存重开，再启动 Forward+ 图形窗口，从保存的负坐标位置继续跨区块移动。验证新区块网格出现、旧节点删除、缓存不超过 392 个分段和退出保存；截图位于输出的 `target/streaming-quic/<UUID>.streaming.png`。该脚本注入移动输入，不代表手动键鼠或长时间探索验收。
 
-`just godot-streaming-perf` 在实际图形窗口、隔离存档中执行近距离/远距离传送和 7 秒加速飞行，记录主线程、地形更新和整帧的 p50/p95/峰值，同时检查每帧更新上限、队列排空、卸载和会话清理。结果与截图位于 `target/streaming-perf-<标签>-<编号>/`；`CDDA_PERF_LABEL` 设置标签，`CDDA_PERF_GI=on|off` 只覆盖本次测试的 SDFGI，不写入用户设置。不指定时使用当前设置；比较前后性能时保持渲染设置相同，避免同时运行其他游戏或构建。短时测试不保证所有场景下的帧时间。
+`just godot-streaming-perf` 在实际图形窗口、隔离存档中执行近距离/远距离传送和 7 秒加速飞行，记录主线程、地形更新和整帧的 p50/p95/峰值，同时检查每帧更新上限、队列排空、卸载和会话清理。结果与截图位于 `target/streaming-perf-<标签>-<编号>/`；`EXA_PERF_LABEL` 设置标签，`EXA_PERF_GI=on|off` 只覆盖本次测试的 SDFGI，不写入用户设置。不指定时使用当前设置；比较前后性能时保持渲染设置相同，避免同时运行其他游戏或构建。短时测试不保证所有场景下的帧时间。
 
 ### 区块数据编解码
 
-`server::chunk_data` 参考 [Minecraft Chunk format](https://minecraft.wiki/w/Chunk_format)，采用 `DataVersion`、区块坐标、`Status`、`LastUpdate`、`sections` 和 `block_entities` 的组织方式。本项目按探索范围保存稀疏的 16×16 区块列，每列八个 16³ 分段；这是项目自己的 rkyv 格式，不是 NBT/Anvil 文件，也不提供 Minecraft 地图导入。
+`exa_server::chunk_data` 参考 [Minecraft Chunk format](https://minecraft.wiki/w/Chunk_format)，采用 `DataVersion`、区块坐标、`Status`、`LastUpdate`、`sections` 和 `block_entities` 的组织方式。本项目按探索范围保存稀疏的 16×16 区块列，每列八个 16³ 分段；这是项目自己的 rkyv 格式，不是 NBT/Anvil 文件，也不提供 Minecraft 地图导入。
 
 每个分段用稳定的 `game:*` 方块名称调色板和 u64 压缩索引保存，索引顺序为 `y*256+z*16+x`。单一方块无需索引数组；其余至少 4 位，索引不跨 u64 边界。箱子作为所属区块的方块实体保存位置、修订号和物品，地面物品同样归属区块列。空分段也显式记录，缺失数据视为损坏。归档不保存生物群系或光照缓存，生态只在首次生成时决定；未探索区块不写入归档，已生成区块必须与世界清单一致，缺失时拒绝加载。
 
@@ -346,7 +350,7 @@ just godot-structures
 
 ### 实体数据编解码
 
-`server::entity_data` 参考 [Minecraft Entity format](https://minecraft.wiki/w/Entity_format) 的类型、UUID、Pos、Motion、Rotation、OnGround 和 Health 字段组织，沿用项目自己的 rkyv 格式，不支持 Minecraft NBT 导入。当前生物类型为 `game:zombie`；玩家继续使用独立玩家归档，箱子与地面物品继续保存在区块归档。
+`exa_server::entity_data` 参考 [Minecraft Entity format](https://minecraft.wiki/w/Entity_format) 的类型、UUID、Pos、Motion、Rotation、OnGround 和 Health 字段组织，沿用项目自己的 rkyv 格式，不支持 Minecraft NBT 导入。当前生物类型为 `game:zombie`；玩家继续使用独立玩家归档，箱子与地面物品继续保存在区块归档。
 
 实体归档包含 DataVersion、Dimension、批次 UUID、种子、世界 tick，以及按 X/Z 区块列组织的实体列表。全部已生成区块列均显式记录，包括空列表，并与地形区块集合核对；怪物越过区块边界后按当前坐标归档。UUID 与 NPC 网络 ID 均唯一，网络 ID 保持高位命名空间，hecs 句柄不落盘。位置和速度以 f64 存储并恢复为运行时 f32，速度单位为米/秒，角度为弧度；另存生命上限、落地状态和最后攻击 tick，随世界时钟共同恢复，离线时间不推进模拟。当前怪物没有俯仰，Rotation 第二项固定为 0；AI 追踪目标在上线后重新计算。
 
@@ -354,7 +358,7 @@ just godot-structures
 
 ### 玩家数据编解码
 
-`server::player_data` 参考 [Minecraft player.dat](https://minecraft.wiki/w/Player.dat_format) 的字段组织，使用固定版本 `rkyv 0.8.18` + `memmap2 0.9.12`。这是本项目的归档格式，不支持直接导入或导出 Minecraft NBT。
+`exa_server::player_data` 参考 [Minecraft player.dat](https://minecraft.wiki/w/Player.dat_format) 的字段组织，使用固定版本 `rkyv 0.8.18` + `memmap2 0.9.12`。这是本项目的归档格式，不支持直接导入或导出 Minecraft NBT。
 
 记录包含 `DataVersion`、UUID、名称、Dimension、Pos、Motion、Rotation、OnGround、Health、Inventory 和 SelectedItemSlot。Inventory 仅存非空槽的 `slot/id/count`，保留 0–8 快捷栏和 9–35 背包的空隙，每格最多 64 个；当前物品名称作为项目内物品标识。SelectedItemSlot 为 0–8，不重复保存手持物品。位置用 f64，运行时还原为现有 f32；速度与角度保留项目单位（米/秒、弧度），生命上限保留 100。
 
@@ -364,13 +368,13 @@ just godot-structures
 
 | Crate / 目录 | 职责 |
 |---|---|
-| `protocol/` | 三维消息、区块与角色共享数据、协议版本 |
-| `simulation/` (`game-simulation`) | 平台无关的体素网格查询、固定步长运动、Rapier 角色碰撞、占位及视线检测；由服务端和客户端共用 |
-| `client-core/voxel` | 三维地图缓存、输入队列、预测与权威状态协调 |
-| `client/` | 会话、QUIC 适配器、固定步长调度与显示插值、纯数据网格生成 |
-| `godot-extension/` (`game-godot`) | 主线程桥接：输入、会话、快照、网格批量传递；不重复实现玩法 |
+| `protocol/` (`exa-protocol`) | 三维消息、区块与角色共享数据、协议版本 |
+| `simulation/` (`exa-simulation`) | 平台无关的体素网格查询、固定步长运动、Rapier 角色碰撞、占位及视线检测；由服务端和客户端共用 |
+| `client-core/voxel` (`exa-client-core`) | 三维地图缓存、输入队列、预测与权威状态协调 |
+| `client/` (`exa-client`) | 会话、QUIC 适配器、固定步长调度与显示插值、纯数据网格生成 |
+| `godot-extension/` (`exa-godot`) | 主线程桥接：输入、会话、快照、网格批量传递；不重复实现玩法 |
 | `godot/` | Forward+ 场景、相机、材质、输入、Godot Control UI 与导出设置 |
-| `server/voxel` | 权威 3D 世界、地形生成、hecs NPC、战斗、快照与带版本的地图存储 |
+| `server/voxel` (`exa-server`) | 权威 3D 世界、地形生成、hecs NPC、战斗、快照与带版本的地图存储 |
 | `simulation/equipment` | 工业设备占用格、局部碰撞形状、端口、六面放置与统一射线；两端共用 |
 | `server/process` | 保留单液水回路；密闭罐输送、热耦合分组、双流换热与守恒校验 |
 | `server/thermo` | 有限正丁烷/正戊烷 PR78 物性、气液平衡与 TP/PH/TV/UV 反求 |
@@ -425,21 +429,21 @@ cargo +nightly -Zscript scripts/godot.rs demo --capture C:/absolute/path/demo.pn
 
 Windows 的 just 配方已配置 PowerShell。GPU 截图需要实际图形会话。`godot-smoke` 验证真实场景与扩展，`godot-multiplayer` 启动隔离服务端并验证两个 Godot 桥接实例的真实 QUIC 会话，不能替代两窗口的键鼠操作验收。
 
-导出需安装 Godot 4.7.2 **标准版** Windows x86_64 模板到 `%APPDATA%/Godot/export_templates/4.7.2.stable/`。脚本将模板暂存至 `target/godot-templates/`，从运行时源文件创建独立 `target/godot-export-stage-*/` 项目，并移除其中的编辑器插件和 .NET 配置，再导出不依赖 .NET 的客户端。产物分别位于 Cargo target 目录的 `export-debug/` 和 `export-release/`，发布需一起携带 `Dungeon.exe`、`Dungeon.pck`、`game_godot.dll`，不得混用 debug/release DLL。`just editor` 打开仓库内正式项目。修改 DLL 或运行会导入同一项目的检查前，关闭现有项目编辑器，避免 Windows DLL 占用。
+导出需安装 Godot 4.7.2 **标准版** Windows x86_64 模板到 `%APPDATA%/Godot/export_templates/4.7.2.stable/`。脚本将模板暂存至 `target/godot-templates/`，从运行时源文件创建独立 `target/godot-export-stage-*/` 项目，并移除其中的编辑器插件和 .NET 配置，再导出不依赖 .NET 的客户端。产物分别位于 Cargo target 目录的 `export-debug/` 和 `export-release/`，发布需一起携带 `exa.exe`、`exa.pck`、`exa_godot.dll`，不得混用 debug/release DLL。`just editor` 打开仓库内正式项目。修改 DLL 或运行会导入同一项目的检查前，关闭现有项目编辑器，避免 Windows DLL 占用。
 
 ### 手动构建与 GitHub Release
 
-[Windows 发布工作流](.github/workflows/release.yml) 仅使用 `workflow_dispatch`，不会因提交、PR 或推送标签自动运行。工作流合入默认分支后，在 GitHub **Actions → Build and release Windows game → Run workflow** 选择要构建的分支，填写 `tag`（如 `v0.1.0`、`v0.1.0-rc.1`）。`prerelease` 标记预发行，`draft` 保留为草稿，默认均关闭；构建成功后默认直接发布 Release。[GitHub 手动触发说明](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#onworkflow_dispatch)
+[Windows 发布工作流](.github/workflows/release.yml) 仅使用 `workflow_dispatch`，不会因提交、PR 或推送标签自动运行。工作流合入默认分支后，在 GitHub **Actions → Build and release exa for Windows → Run workflow** 选择要构建的分支，填写 `tag`（如 `v0.1.0`、`v0.1.0-rc.1`）。`prerelease` 标记预发行，`draft` 保留为草稿，默认均关闭；构建成功后默认直接发布 Release。[GitHub 手动触发说明](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#onworkflow_dispatch)
 
 流程在 Windows x64 上安装仓库指定的 stable Rust、脚本使用的 nightly 和固定 Godot 4.7.2 标准版，按官方 SHA-512 清单校验编辑器与导出模板。串行执行 `just check`、`just test`、`just scripts-test`，以及 Godot smoke、908 种工业模型和双客户端 QUIC 检查，以两个构建任务编译 release 服务端并导出客户端；不运行 WASM 检查。导出资源包含 `godot/assets/` 下的工业模型。实际发布包通过正常入口验证原生扩展加载、离线漫游、连接独立 release 服务端及服务端保存退出；单人启停/保存和完整联机行为由前面的 Godot 场景测试覆盖。标准 release 模板禁止 `--path` / `--script` 覆盖，不改变该限制，也不把测试脚本打进游戏。这些 headless 检查不代表 GPU、完整手动键鼠或窗口验收完成。
 
-Release 附件为 `Dungeon-<tag>-windows-x86_64.zip` 和 `SHA256SUMS.txt`。ZIP 内含 `Dungeon.exe`、`Dungeon.pck`、匹配的 `game_godot.dll`、可选独立服务端 `server.exe`、说明和素材许可；完整解压后运行 `Dungeon.exe`，单人游戏无需另启服务端或安装 Godot/.NET。`BUILD-INFO.txt` 记录实际提交、工具版本和构建链接。存档、证书、日志、编辑器插件及 MCP 工具不打包。构建附件和检查日志还会在 Actions 保留 14 天。
+Release 附件为 `exa-<tag>-windows-x86_64.zip` 和 `SHA256SUMS.txt`。ZIP 内含 `exa.exe`、`exa.pck`、匹配的 `exa_godot.dll`、可选独立服务端 `exa-server.exe`、说明和素材许可；完整解压后运行 `exa.exe`，单人游戏无需另启服务端或安装 Godot/.NET。`BUILD-INFO.txt` 记录实际提交、工具版本和构建链接。存档、证书、日志、编辑器插件及 MCP 工具不打包。构建附件和检查日志还会在 Actions 保留 14 天。
 
 标签始终指向本次选择并构建的准确提交：不存在时在发布阶段创建，已存在但指向其他提交则失败。已有 Release 不覆盖；重发请用新标签；若上传失败留下草稿，先检查并处理该草稿再重试。相同标签的运行串行执行。只有发布任务获得 `contents: write`，使用 GitHub 自带的 `GITHUB_TOKEN`，无需额外配置个人令牌；仓库规则仍须允许创建标签和 Release。[GitHub CLI 发布行为](https://cli.github.com/manual/gh_release_create)
 
 ### 可选 Godot MCP 工具
 
-Godot MCP 是可选编辑器工具，已接入本仓库 `godot/`，本地端点为 `http://localhost:17860/mcp`。依赖 Godot 4.7.2 .NET、.NET SDK 8 与 `godot-cli@0.33.0`。`Dungeon.Editor.csproj` 仅编译编辑器插件，游戏仍使用 Rust/GDScript；插件源码和生成的代理技能被 Git 忽略。首次运行先 `just build`，再执行 `cargo +nightly -Zscript scripts/godot-mcp.rs` 安装固定版本插件、构建并启动无窗口编辑器。已打开时先用 `godot-cli close godot --owned-only` 关闭，再更新 DLL 或插件程序集。
+Godot MCP 是可选编辑器工具，已接入本仓库 `godot/`，本地端点为 `http://localhost:17860/mcp`。依赖 Godot 4.7.2 .NET、.NET SDK 8 与 `godot-cli@0.33.0`。`exa.Editor.csproj` 仅编译编辑器插件，游戏仍使用 Rust/GDScript；插件源码和生成的代理技能被 Git 忽略。首次运行先 `just build`，再执行 `cargo +nightly -Zscript scripts/godot-mcp.rs` 安装固定版本插件、构建并启动无窗口编辑器。已打开时先用 `godot-cli close godot --owned-only` 关闭，再更新 DLL 或插件程序集。
 
 操作前通过 MCP 查询 `editor | select projectPath, editedScene`，必须指向本仓库，不能把 `GodotMcpSandbox` 当验收项目。修改后用 `editor | call SaveScene()` 保存。2026-10-27 已通过 MCP 给主场景写入职责说明、保存并回读，主脚本验证无错误。导出排除插件、C#、测试、代理技能和工具配置；运行游戏无需 MCP 服务或编辑器。安装阶段的旧开始菜单快捷方式仍指向沙盒，应使用本仓库脚本启动正式项目。
 

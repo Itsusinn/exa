@@ -1,7 +1,7 @@
 //! Main-thread-only bridge. Simulation and transport remain ordinary Rust.
-use client::{mesh::Mesh, movement::Movement, presentation, session::Session};
+use exa_client::{mesh::Mesh, movement::Movement, presentation, session::Session};
+use exa_protocol::PlayerInput;
 use godot::{classes::Node, prelude::*};
-use protocol::PlayerInput;
 
 struct GameExtension;
 #[gdextension]
@@ -73,7 +73,7 @@ impl GameBridge {
 
     #[func]
     fn rotate_equipment(&mut self) {
-        if self.session.selected_equipment() == Some(protocol::EquipmentKind::PipeRack) {
+        if self.session.selected_equipment() == Some(exa_protocol::EquipmentKind::PipeRack) {
             self.session.equipment_axis = if self.session.equipment_axis == 0 {
                 2
             } else {
@@ -109,7 +109,7 @@ impl GameBridge {
     fn pipe_route_state(&mut self, yaw: f32, pitch: f32) -> VarDictionary {
         self.session.update_pipe_route(yaw, pitch);
         let s = &self.session;
-        let anchor = |a: Option<protocol::PipeAnchor>| -> VarDictionary {
+        let anchor = |a: Option<exa_protocol::PipeAnchor>| -> VarDictionary {
             a.and_then(|a| s.model.terrain.equipment.get(&a.id).and_then(|d| presentation::equipment_ports(d).get(usize::from(a.port)).copied().map(|port| (a,port))))
                 .map_or_else(VarDictionary::new, |(a,p)| vdict! {"id"=>a.id as i64,"revision"=>a.revision as i64,"port"=>i64::from(a.port),"position"=>vector(p.position)})
         };
@@ -120,7 +120,7 @@ impl GameBridge {
             .slots
             .iter()
             .flatten()
-            .filter(|item| item.name == protocol::PIPE_ITEM)
+            .filter(|item| item.name == exa_protocol::PIPE_ITEM)
             .map(|item| item.quantity)
             .sum();
         let enough = held as usize >= s.pipe_plan.len();
@@ -155,7 +155,7 @@ impl GameBridge {
             return;
         }
         self.session
-            .configure_equipment(protocol::EquipmentCommand::Configure {
+            .configure_equipment(exa_protocol::EquipmentCommand::Configure {
                 id: id as u64,
                 revision: revision as u64,
                 enabled,
@@ -192,7 +192,7 @@ impl GameBridge {
         }
         let tank_size = if matches!(
             kind,
-            protocol::EquipmentKind::Tank | protocol::EquipmentKind::Vessel
+            exa_protocol::EquipmentKind::Tank | exa_protocol::EquipmentKind::Vessel
         ) {
             let Some(diameter) = integer("diameter").and_then(|v| u8::try_from(v).ok()) else {
                 return VarDictionary::new();
@@ -200,7 +200,7 @@ impl GameBridge {
             let Some(height) = integer("height").and_then(|v| u8::try_from(v).ok()) else {
                 return VarDictionary::new();
             };
-            let size = protocol::TankSize { diameter, height };
+            let size = exa_protocol::TankSize { diameter, height };
             if !size.valid() {
                 return VarDictionary::new();
             }
@@ -221,7 +221,7 @@ impl GameBridge {
             None
         };
         let mut pipe_ends = None;
-        if kind == protocol::EquipmentKind::Pipe {
+        if kind == exa_protocol::EquipmentKind::Pipe {
             if let Some(ends) = input
                 .get("pipe_ends")
                 .and_then(|v| v.try_to::<VarArray>().ok())
@@ -244,7 +244,7 @@ impl GameBridge {
                 }
             }
         }
-        let device = protocol::EquipmentSnapshot {
+        let device = exa_protocol::EquipmentSnapshot {
             id: 0,
             revision: 0,
             kind,
@@ -284,9 +284,9 @@ impl GameBridge {
         pitch: f32,
     ) {
         let mode = match mode {
-            0 => protocol::HeatControlMode::Off,
-            1 => protocol::HeatControlMode::Manual,
-            2 => protocol::HeatControlMode::OutletTemperature,
+            0 => exa_protocol::HeatControlMode::Off,
+            1 => exa_protocol::HeatControlMode::Manual,
+            2 => exa_protocol::HeatControlMode::OutletTemperature,
             _ => return,
         };
         if id <= 0
@@ -299,12 +299,12 @@ impl GameBridge {
             return;
         }
         self.session
-            .configure_equipment(protocol::EquipmentCommand::ConfigureThermal {
+            .configure_equipment(exa_protocol::EquipmentCommand::ConfigureThermal {
                 id: id as u64,
                 revision: revision as u64,
                 yaw,
                 pitch,
-                settings: protocol::ThermalSettings {
+                settings: exa_protocol::ThermalSettings {
                     mode,
                     duty_fraction,
                     target_temperature_k,
@@ -337,7 +337,7 @@ impl GameBridge {
         let Some(kind) = self.session.selected_equipment().filter(|kind| {
             matches!(
                 kind,
-                protocol::EquipmentKind::Tank | protocol::EquipmentKind::Vessel
+                exa_protocol::EquipmentKind::Tank | exa_protocol::EquipmentKind::Vessel
             )
         }) else {
             return VarDictionary::new();
@@ -351,7 +351,7 @@ impl GameBridge {
         let (Ok(diameter), Ok(height)) = (u8::try_from(diameter), u8::try_from(height)) else {
             return false;
         };
-        let size = protocol::TankSize { diameter, height };
+        let size = exa_protocol::TankSize { diameter, height };
         if !size.valid() || self.tank_build_spec().is_empty() {
             return false;
         }
@@ -364,7 +364,7 @@ impl GameBridge {
         let (Ok(diameter), Ok(height)) = (u8::try_from(diameter), u8::try_from(height)) else {
             return 0.0;
         };
-        let size = protocol::TankSize { diameter, height };
+        let size = exa_protocol::TankSize { diameter, height };
         if size.valid() {
             presentation::tank_capacity_for_size(size)
         } else {
@@ -377,15 +377,15 @@ impl GameBridge {
         let (Ok(diameter), Ok(height)) = (u8::try_from(diameter), u8::try_from(height)) else {
             return VarDictionary::new();
         };
-        let size = protocol::TankSize { diameter, height };
+        let size = exa_protocol::TankSize { diameter, height };
         if !size.valid() || !matches!(kind, 0 | 4) {
             return VarDictionary::new();
         }
         geometry(presentation::equipment_shape_sized(
             if kind == 0 {
-                protocol::EquipmentKind::Tank
+                exa_protocol::EquipmentKind::Tank
             } else {
-                protocol::EquipmentKind::Vessel
+                exa_protocol::EquipmentKind::Vessel
             },
             0,
             Some(size),
@@ -436,7 +436,7 @@ impl GameBridge {
     fn column_selected(&self) -> bool {
         self.session
             .selected_equipment()
-            .is_some_and(protocol::EquipmentKind::is_column)
+            .is_some_and(exa_protocol::EquipmentKind::is_column)
     }
 
     #[func]
@@ -475,13 +475,13 @@ impl GameBridge {
 
     #[func]
     fn distillation_defaults(&self) -> VarDictionary {
-        distillation_spec_dictionary(&protocol::DistillationSpec::default())
+        distillation_spec_dictionary(&exa_protocol::DistillationSpec::default())
     }
 
     #[func]
     fn calculate_distillation(&mut self, input: VarDictionary) -> bool {
-        let spec = (|| -> Option<protocol::DistillationSpec> {
-            Some(protocol::DistillationSpec {
+        let spec = (|| -> Option<exa_protocol::DistillationSpec> {
+            Some(exa_protocol::DistillationSpec {
                 trays: u8::try_from(input.get("trays")?.try_to::<i32>().ok()?).ok()?,
                 feed_tray: u8::try_from(input.get("feed_tray")?.try_to::<i32>().ok()?).ok()?,
                 feed_mol_s: input.get("feed_mol_s")?.try_to::<f64>().ok()?,
@@ -510,11 +510,11 @@ impl GameBridge {
         state.set(
             "status",
             match reply.status {
-                protocol::DistillationStatus::Running => "running",
-                protocol::DistillationStatus::Completed => "completed",
-                protocol::DistillationStatus::Cancelled => "cancelled",
-                protocol::DistillationStatus::Rejected => "rejected",
-                protocol::DistillationStatus::Failed => "failed",
+                exa_protocol::DistillationStatus::Running => "running",
+                exa_protocol::DistillationStatus::Completed => "completed",
+                exa_protocol::DistillationStatus::Cancelled => "cancelled",
+                exa_protocol::DistillationStatus::Rejected => "rejected",
+                exa_protocol::DistillationStatus::Failed => "failed",
             },
         );
         state.set("message", reply.message.as_str());
@@ -562,7 +562,7 @@ impl GameBridge {
             "valid" => line.valid, "message" => line.message.as_str()
         }.to_variant()).collect();
         vdict! { "pending" => false, "request_id" => report.request_id as i64, "master_id" => report.master_id as i64,
-        "status" => match report.status { protocol::AssemblyStatus::Complete => "complete", protocol::AssemblyStatus::Incomplete => "incomplete", protocol::AssemblyStatus::Stale => "stale", protocol::AssemblyStatus::Rejected => "rejected" },
+        "status" => match report.status { exa_protocol::AssemblyStatus::Complete => "complete", exa_protocol::AssemblyStatus::Incomplete => "incomplete", exa_protocol::AssemblyStatus::Stale => "stale", exa_protocol::AssemblyStatus::Rejected => "rejected" },
         "message" => report.message.as_str(), "lines" => &lines }
     }
 
@@ -587,7 +587,7 @@ impl GameBridge {
             return VarDictionary::new();
         }
         geometry(presentation::equipment_shape_with_ends(
-            protocol::EquipmentKind::Pipe,
+            exa_protocol::EquipmentKind::Pipe,
             axis as u8,
             Some([first as u8, second as u8]),
         ))
@@ -603,7 +603,7 @@ impl GameBridge {
             .block_target(yaw, pitch)
             .map_or_else(VarDictionary::new, |p| {
                 vdict! { "position" => Vector3i::new(p[0],p[1],p[2]),
-                "name" => protocol::block_item_name(m.terrain.get(p)).unwrap_or("") }
+                "name" => exa_protocol::block_item_name(m.terrain.get(p)).unwrap_or("") }
             })
     }
 
@@ -629,14 +629,16 @@ impl GameBridge {
 
     #[func]
     fn open_container(&mut self, position: Vector3i) {
-        self.session.container(protocol::ContainerCommand::Open {
-            position: [position.x, position.y, position.z],
-        });
+        self.session
+            .container(exa_protocol::ContainerCommand::Open {
+                position: [position.x, position.y, position.z],
+            });
     }
 
     #[func]
     fn close_container(&mut self) {
-        self.session.container(protocol::ContainerCommand::Close);
+        self.session
+            .container(exa_protocol::ContainerCommand::Close);
     }
 
     #[func]
@@ -677,7 +679,7 @@ impl GameBridge {
             return;
         };
         self.session
-            .container(protocol::ContainerCommand::Transfer {
+            .container(exa_protocol::ContainerCommand::Transfer {
                 position: [position.x, position.y, position.z],
                 revision,
                 inventory_revision,
@@ -692,7 +694,7 @@ impl GameBridge {
     fn select_hotbar(&mut self, slot: i64) {
         if let Ok(slot) = u8::try_from(slot) {
             self.session
-                .inventory(protocol::InventoryCommand::Select { slot });
+                .inventory(exa_protocol::InventoryCommand::Select { slot });
         }
     }
 
@@ -704,12 +706,13 @@ impl GameBridge {
             u8::try_from(to),
             u32::try_from(quantity),
         ) {
-            self.session.inventory(protocol::InventoryCommand::Move {
-                revision,
-                from,
-                to,
-                quantity,
-            });
+            self.session
+                .inventory(exa_protocol::InventoryCommand::Move {
+                    revision,
+                    from,
+                    to,
+                    quantity,
+                });
         }
     }
 
@@ -717,7 +720,7 @@ impl GameBridge {
     fn quick_move_inventory(&mut self, revision: i64, slot: i64) {
         if let (Ok(revision), Ok(slot)) = (u64::try_from(revision), u8::try_from(slot)) {
             self.session
-                .inventory(protocol::InventoryCommand::QuickMove { revision, slot });
+                .inventory(exa_protocol::InventoryCommand::QuickMove { revision, slot });
         }
     }
 
@@ -815,7 +818,7 @@ impl GameBridge {
                 "name" => i.name.as_str(), "quantity" => i64::from(i.quantity)
             }.to_variant()).collect();
             vdict! { "position" => Vector3i::new(c.position[0],c.position[1],c.position[2]),
-                "revision" => c.revision as i64, "items" => &items, "capacity" => protocol::CONTAINER_SLOTS as i64 }
+                "revision" => c.revision as i64, "items" => &items, "capacity" => exa_protocol::CONTAINER_SLOTS as i64 }
         });
         vdict! {
             "ready" => m.ready, "demo" => self.session.demo,
@@ -833,7 +836,7 @@ impl GameBridge {
             "pending" => m.pending.len() as i64,
             "spawn_rotation" => Vector2::new(m.spawn_rotation[0], m.spawn_rotation[1]),
             "inventory_slots" => &inventory_slots, "inventory_revision" => m.inventory.revision as i64,
-            "selected_slot" => i64::from(m.inventory.selected), "stack_limit" => protocol::ITEM_STACK_LIMIT,
+            "selected_slot" => i64::from(m.inventory.selected), "stack_limit" => exa_protocol::ITEM_STACK_LIMIT,
             "container" => &container, "container_error" => m.container_error.as_str(),
             "actors" => &actors, "items" => &items, "inventory" => &inventory, "journal" => &journal
         }
@@ -851,7 +854,7 @@ impl GameBridge {
     #[func]
     fn chunk_geometry(&self, origin: Vector3i) -> VarDictionary {
         let origin = [origin.x, origin.y, origin.z];
-        if !protocol::valid_voxel(origin)
+        if !exa_protocol::valid_voxel(origin)
             || origin.iter().any(|v| v.rem_euclid(16) != 0)
             || !self.session.model.terrain.blocks.contains_key(&origin)
         {
@@ -868,8 +871,8 @@ impl GameBridge {
 
     #[func]
     fn item_geometry(&self) -> VarDictionary {
-        let mut model = client::session::Model::default();
-        model.items.push(protocol::GroundItem3d {
+        let mut model = exa_client::session::Model::default();
+        model.items.push(exa_protocol::GroundItem3d {
             id: 1,
             position: [0.0; 3],
             name: String::new(),
@@ -885,18 +888,18 @@ impl GameBridge {
     }
 }
 
-fn distillation_spec_dictionary(spec: &protocol::DistillationSpec) -> VarDictionary {
+fn distillation_spec_dictionary(spec: &exa_protocol::DistillationSpec) -> VarDictionary {
     vdict! { "trays" => i32::from(spec.trays), "feed_tray" => i32::from(spec.feed_tray),
     "feed_mol_s" => spec.feed_mol_s, "butane_fraction" => spec.butane_fraction,
     "feed_temperature_k" => spec.feed_temperature_k, "pressure_pa" => spec.pressure_pa,
     "reflux_ratio" => spec.reflux_ratio, "distillate_fraction" => spec.distillate_fraction }
 }
 
-fn column_design_dictionary(design: &protocol::ColumnDesign) -> VarDictionary {
+fn column_design_dictionary(design: &exa_protocol::ColumnDesign) -> VarDictionary {
     vdict! {"diameter" => i32::from(design.diameter), "thermo_revision" => design.thermo_revision.as_str(), "spec" => &distillation_spec_dictionary(&design.spec)}
 }
 
-fn parse_column_design(input: &VarDictionary) -> Option<protocol::ColumnDesign> {
+fn parse_column_design(input: &VarDictionary) -> Option<exa_protocol::ColumnDesign> {
     if input.len() != 3 {
         return None;
     }
@@ -915,14 +918,14 @@ fn parse_column_design(input: &VarDictionary) -> Option<protocol::ColumnDesign> 
     {
         return None;
     }
-    let design = protocol::ColumnDesign {
+    let design = exa_protocol::ColumnDesign {
         diameter: diameter as u8,
         thermo_revision: input
             .get("thermo_revision")?
             .try_to::<GString>()
             .ok()?
             .to_string(),
-        spec: protocol::DistillationSpec {
+        spec: exa_protocol::DistillationSpec {
             trays: trays as u8,
             feed_tray: feed as u8,
             feed_mol_s: number("feed_mol_s")?,
@@ -944,8 +947,8 @@ fn column_number(value: Variant) -> Option<f64> {
         .filter(|n| n.is_finite())
 }
 
-fn equipment_kind(id: i32) -> Option<protocol::EquipmentKind> {
-    use protocol::EquipmentKind::*;
+fn equipment_kind(id: i32) -> Option<exa_protocol::EquipmentKind> {
+    use exa_protocol::EquipmentKind::*;
     Some(match id {
         0 => Tank,
         1 => Pipe,
@@ -963,8 +966,8 @@ fn equipment_kind(id: i32) -> Option<protocol::EquipmentKind> {
     })
 }
 
-fn equipment_kind_id(kind: protocol::EquipmentKind) -> i32 {
-    use protocol::EquipmentKind::*;
+fn equipment_kind_id(kind: exa_protocol::EquipmentKind) -> i32 {
+    use exa_protocol::EquipmentKind::*;
     match kind {
         Tank => 0,
         Pipe => 1,
@@ -981,8 +984,8 @@ fn equipment_kind_id(kind: protocol::EquipmentKind) -> i32 {
     }
 }
 
-fn port_role(kind: protocol::EquipmentKind, id: u8) -> &'static str {
-    use protocol::EquipmentKind::*;
+fn port_role(kind: exa_protocol::EquipmentKind, id: u8) -> &'static str {
+    use exa_protocol::EquipmentKind::*;
     let roles: &[&str] = match kind {
         Column => &["进料", "塔顶产品", "塔底产品"],
         RefluxColumn => &["进料", "塔顶蒸气", "塔底液", "回流入口", "再沸蒸气返回"],
@@ -1000,7 +1003,7 @@ fn port_role(kind: protocol::EquipmentKind, id: u8) -> &'static str {
     roles.get(usize::from(id)).copied().unwrap_or("")
 }
 
-fn equipment_dictionary(device: &protocol::EquipmentSnapshot) -> VarDictionary {
+fn equipment_dictionary(device: &exa_protocol::EquipmentSnapshot) -> VarDictionary {
     let pipe_ends: VarArray = device
         .pipe_ends
         .into_iter()
@@ -1027,14 +1030,14 @@ fn equipment_dictionary(device: &protocol::EquipmentSnapshot) -> VarDictionary {
     "pump_reversed" => device.pump_reversed, "thermal" => &thermal_settings_dictionary(device.thermal.as_ref()), "reading" => &reading_dictionary(device.reading.as_ref()) }
 }
 
-fn thermal_settings_dictionary(settings: Option<&protocol::ThermalSettings>) -> VarDictionary {
+fn thermal_settings_dictionary(settings: Option<&exa_protocol::ThermalSettings>) -> VarDictionary {
     settings.map_or_else(VarDictionary::new, |settings| vdict! {
-        "mode" => match settings.mode { protocol::HeatControlMode::Off => 0i32, protocol::HeatControlMode::Manual => 1, protocol::HeatControlMode::OutletTemperature => 2 },
+        "mode" => match settings.mode { exa_protocol::HeatControlMode::Off => 0i32, exa_protocol::HeatControlMode::Manual => 1, exa_protocol::HeatControlMode::OutletTemperature => 2 },
         "duty_fraction" => settings.duty_fraction, "target_temperature_k" => settings.target_temperature_k,
     })
 }
 
-fn thermal_reading_dictionary(reading: Option<&protocol::ThermalReading>) -> VarDictionary {
+fn thermal_reading_dictionary(reading: Option<&exa_protocol::ThermalReading>) -> VarDictionary {
     reading.map_or_else(VarDictionary::new, |reading| {
         let temperatures = |values: [Option<f64>; 2]| -> VarArray {
             values.into_iter().map(|v| v.map_or(Variant::nil(), |v| v.to_variant())).collect()
@@ -1045,14 +1048,14 @@ fn thermal_reading_dictionary(reading: Option<&protocol::ThermalReading>) -> Var
             "liquid_moles" => &numbers(reading.liquid_moles), "vapor_moles" => &numbers(reading.vapor_moles),
             "heat_w" => reading.heat_w, "inlet_temperature_k" => &temperatures(reading.inlet_temperature_k),
             "outlet_temperature_k" => &temperatures(reading.outlet_temperature_k), "flow_m3_s" => &numbers(reading.flow_m3_s),
-            "quality" => match reading.quality { protocol::ReadingQuality::Available => "available", protocol::ReadingQuality::NoFlow => "no_flow", protocol::ReadingQuality::Unavailable => "unavailable" },
-            "control_state" => match reading.control_state { protocol::ControlState::Off => "off", protocol::ControlState::Manual => "manual", protocol::ControlState::Regulating => "regulating", protocol::ControlState::Limited => "limited" },
+            "quality" => match reading.quality { exa_protocol::ReadingQuality::Available => "available", exa_protocol::ReadingQuality::NoFlow => "no_flow", exa_protocol::ReadingQuality::Unavailable => "unavailable" },
+            "control_state" => match reading.control_state { exa_protocol::ControlState::Off => "off", exa_protocol::ControlState::Manual => "manual", exa_protocol::ControlState::Regulating => "regulating", exa_protocol::ControlState::Limited => "limited" },
             "sampled_at_tick" => reading.sampled_at_tick as i64,
         }
     })
 }
 
-fn reading_dictionary(reading: Option<&protocol::EquipmentReading>) -> VarDictionary {
+fn reading_dictionary(reading: Option<&exa_protocol::EquipmentReading>) -> VarDictionary {
     reading.map_or_else(VarDictionary::new, |reading| vdict! {
         "temperature_k" => &reading.temperature_k.map_or(Variant::nil(), |value| value.to_variant()),
         "pressure_pa" => &reading.pressure_pa.map_or(Variant::nil(), |value| value.to_variant()), "volume_m3" => reading.volume_m3,
@@ -1066,9 +1069,9 @@ fn vector(p: [f32; 3]) -> Vector3 {
     Vector3::new(p[0], p[1], p[2])
 }
 
-fn game_model_for_actor(kind: i32) -> client::session::Model {
-    let mut m = client::session::Model::default();
-    m.actors.push(protocol::Actor3d {
+fn game_model_for_actor(kind: i32) -> exa_client::session::Model {
+    let mut m = exa_client::session::Model::default();
+    m.actors.push(exa_protocol::Actor3d {
         id: 1,
         kind: u8::from(kind != 0),
         position: [0.0; 3],

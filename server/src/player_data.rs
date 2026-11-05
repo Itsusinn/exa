@@ -39,13 +39,13 @@ impl PlayerData {
     pub fn capture(
         uuid: [u8; 16],
         name: String,
-        body: protocol::Body,
+        body: exa_protocol::Body,
         health: i32,
         rotation: [f32; 2],
-        inventory: &protocol::PlayerInventory,
+        inventory: &exa_protocol::PlayerInventory,
     ) -> Result<Self> {
         anyhow::ensure!(
-            inventory.slots.len() == protocol::INVENTORY_SLOTS,
+            inventory.slots.len() == exa_protocol::INVENTORY_SLOTS,
             "invalid runtime slot count"
         );
         let value = Self {
@@ -78,19 +78,19 @@ impl PlayerData {
 
     /// Network revisions belong to a connection and restart at zero on restore.
     /// The world must still check the restored body against terrain and actors.
-    pub fn restore(&self) -> Result<(protocol::Body, protocol::PlayerInventory)> {
+    pub fn restore(&self) -> Result<(exa_protocol::Body, exa_protocol::PlayerInventory)> {
         self.validate()?;
-        let body = protocol::Body {
+        let body = exa_protocol::Body {
             position: self.pos.map(|v| v as f32),
             velocity: self.motion.map(|v| v as f32),
             grounded: self.on_ground,
         };
-        let mut inventory = protocol::PlayerInventory {
+        let mut inventory = exa_protocol::PlayerInventory {
             selected: self.selected_item_slot,
             ..Default::default()
         };
         for item in &self.inventory {
-            inventory.slots[item.slot as usize] = Some(protocol::InventoryEntry {
+            inventory.slots[item.slot as usize] = Some(exa_protocol::InventoryEntry {
                 name: item.id.clone(),
                 quantity: item.count,
             });
@@ -133,23 +133,23 @@ impl PlayerData {
             "invalid player Health"
         );
         anyhow::ensure!(
-            self.selected_item_slot < protocol::HOTBAR_SLOTS as u8,
+            self.selected_item_slot < exa_protocol::HOTBAR_SLOTS as u8,
             "invalid SelectedItemSlot"
         );
         anyhow::ensure!(
-            self.inventory.len() <= protocol::INVENTORY_SLOTS,
+            self.inventory.len() <= exa_protocol::INVENTORY_SLOTS,
             "too many inventory entries"
         );
         let mut used = HashSet::new();
         for item in &self.inventory {
             anyhow::ensure!(
-                item.slot < protocol::INVENTORY_SLOTS as u8 && used.insert(item.slot),
+                item.slot < exa_protocol::INVENTORY_SLOTS as u8 && used.insert(item.slot),
                 "invalid or duplicate inventory Slot"
             );
             anyhow::ensure!(
                 !item.id.is_empty()
                     && item.id.len() <= 128
-                    && (1..=protocol::ITEM_STACK_LIMIT).contains(&item.count),
+                    && (1..=exa_protocol::ITEM_STACK_LIMIT).contains(&item.count),
                 "invalid inventory item"
             );
         }

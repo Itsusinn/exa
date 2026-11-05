@@ -7,7 +7,7 @@ default:
 
 # 启动独立 Rust 服务端
 server:
-    cargo run -p server --jobs 2
+    cargo run -p exa-server --jobs 2
 
 # 构建扩展并启动 Godot 客户端
 client:
@@ -60,7 +60,7 @@ test:
 
 # 单独运行真实 QUIC 多客户端集成测试
 test-multiplayer:
-    cargo test -p client --test multiplayer --jobs 2
+    cargo test -p exa-client --test multiplayer --jobs 2
 
 # 生成工作区 API 文档（不生成依赖文档）
 doc:

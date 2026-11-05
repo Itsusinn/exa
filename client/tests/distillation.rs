@@ -1,7 +1,7 @@
 //! Real QUIC lifecycle coverage for the separate bounded design worker.
-use client::network_client::{connect_endpoint, read_message, write_message};
-use protocol::*;
-use server::{
+use exa_client::network_client::{connect_endpoint, read_message, write_message};
+use exa_protocol::*;
+use exa_server::{
     network::{make_server_endpoint, serve_endpoint},
     voxel::VoxelWorld,
 };

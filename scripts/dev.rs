@@ -44,11 +44,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     let repo = support::repo_root(env!("CARGO_MANIFEST_PATH"))?;
     env::set_current_dir(&repo)?;
     let godot = support::Godot::load()?;
-    let mut address: SocketAddr = env::var("CDDA_BIND")
+    let mut address: SocketAddr = support::project_var("BIND")
         .unwrap_or_else(|_| "127.0.0.1:9876".into())
         .parse()?;
     if address.port() == 0 {
-        return Err("just dev requires a fixed nonzero CDDA_BIND port".into());
+        return Err("just dev requires a fixed nonzero EXA_BIND port".into());
     }
     if address.ip().is_unspecified() {
         address.set_ip(match address.ip() {
@@ -56,8 +56,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             IpAddr::V6(_) => Ipv6Addr::LOCALHOST.into(),
         });
     }
-    let certificate =
-        repo.join(env::var_os("CDDA_CERT_PATH").unwrap_or_else(|| "save/server.cert.der".into()));
+    let certificate = repo.join(
+        support::project_var_os("CERT_PATH").unwrap_or_else(|| "save/server.cert.der".into()),
+    );
     // Do all compilation before opening the world or launching a GUI.
     if !Command::new("just")
         .arg("build")
@@ -84,9 +85,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     }
     let mut server = Server(
-        hidden(&mut Command::new(target.join("debug/server.exe")))
-            .env("CDDA_SHUTDOWN_ON_STDIN_CLOSE", "1")
-            .env("RUST_LOG", "server=info")
+        hidden(&mut Command::new(target.join("debug/exa-server.exe")))
+            .env("EXA_SHUTDOWN_ON_STDIN_CLOSE", "1")
+            .env("RUST_LOG", "exa_server=info")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()?,

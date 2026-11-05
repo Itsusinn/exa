@@ -1,10 +1,10 @@
 //! Bounded, request-only inspection of heat units and column external connections.
 //! This is a construction report, never a condition for process execution.
-use game_simulation::equipment::{connected, ports, EquipmentPort};
-use protocol::{
+use exa_protocol::{
     AssemblyLine, AssemblyReport, AssemblyStatus, EquipmentKind, EquipmentSnapshot, TankSize,
     MAX_EQUIPMENT,
 };
+use exa_simulation::equipment::{connected, ports, EquipmentPort};
 use std::collections::{BTreeMap, BTreeSet};
 mod reflux;
 #[cfg(test)]
@@ -20,7 +20,7 @@ pub struct Structure {
     ends: Option<[u8; 2]>,
     size: Option<TankSize>,
     reversed: bool,
-    design: Option<protocol::ColumnDesign>,
+    design: Option<exa_protocol::ColumnDesign>,
 }
 pub fn structure(devices: &BTreeMap<u64, EquipmentSnapshot>) -> Vec<Structure> {
     devices
@@ -292,7 +292,7 @@ pub(crate) mod tests {
     #[test]
     fn column_external_lines_require_three_vessels_valves_and_feed_direction() {
         let mut column = device(1, EquipmentKind::Column, [0, 10, 0]);
-        let mut design = protocol::ColumnDesign::default();
+        let mut design = exa_protocol::ColumnDesign::default();
         design.spec.trays = 2;
         design.spec.feed_tray = 1;
         column.column_design = Some(design);

@@ -2,7 +2,7 @@
 //! Game-native rkyv records; neither NBT nor serialized hecs handles.
 use crate::archive_io::{self, MappedArchive};
 use anyhow::{Context, Result};
-use protocol::{Actor3d, Body, CHUNK_EDGE, WORLD_SIZE};
+use exa_protocol::{Actor3d, Body, CHUNK_EDGE, WORLD_SIZE};
 use rkyv::{rancor::Error, Archive, Deserialize, Serialize};
 use std::{collections::HashSet, path::Path};
 
@@ -49,7 +49,7 @@ impl EntityData {
         anyhow::ensure!(self.uuid != [0; 16], "nil entity UUID");
         anyhow::ensure!(self.network_id >= 1 << 31, "invalid NPC network ID");
         anyhow::ensure!(
-            protocol::valid_position(self.pos.map(|v| v as f32)),
+            exa_protocol::valid_position(self.pos.map(|v| v as f32)),
             "invalid entity Pos"
         );
         anyhow::ensure!(
@@ -198,7 +198,7 @@ impl EntityArchive {
         for chunk in &self.chunks {
             let [x, z] = chunk.position;
             anyhow::ensure!(
-                protocol::valid_column([x, z])
+                exa_protocol::valid_column([x, z])
                     && (self.data_version != 1 || ((0..nx).contains(&x) && (0..nz).contains(&z)))
                     && chunks.insert(chunk.position),
                 "invalid/duplicate entity chunk"
@@ -292,7 +292,7 @@ mod tests {
             |e| e.network_id = 1,
             |e| e.pos[0] = f64::NAN,
             |e| e.pos[1] = -1.0,
-            |e| e.pos[2] = f64::from(protocol::WORLD_LIMIT),
+            |e| e.pos[2] = f64::from(exa_protocol::WORLD_LIMIT),
             |e| e.motion[0] = f64::INFINITY,
             |e| e.motion[1] = 101.0,
             |e| e.rotation[0] = f32::NAN,

@@ -2,7 +2,7 @@
 //! Plans depend only on seed/coordinates. Writes are clipped to the new column.
 use super::ecology::{hash, surface, Biome};
 use anyhow::{ensure, Context, Result};
-use protocol::*;
+use exa_protocol::*;
 use serde::Deserialize;
 use std::{collections::BTreeMap, sync::OnceLock};
 
@@ -365,7 +365,7 @@ fn paint(c: &Catalog, seed: u64, site: &Site<'_>, origin: [i32; 2], blocks: &mut
 mod tests {
     use super::*;
     use crate::voxel::{terrain::ensure_column, VoxelWorld};
-    use game_simulation::grid::Grid;
+    use exa_simulation::grid::Grid;
 
     fn sites(c: &Catalog) -> Vec<Site<'_>> {
         let mut found = BTreeMap::new();
@@ -453,7 +453,7 @@ mod tests {
             for (x, z) in route {
                 let feet = local(&site, x, 1, z);
                 assert!(
-                    !game_simulation::overlaps(feet.map(|v| v as f32 + 0.5), &|p| grid.solid(p)),
+                    !exa_simulation::overlaps(feet.map(|v| v as f32 + 0.5), &|p| grid.solid(p)),
                     "blocked path in {} at {feet:?}",
                     site.definition.id
                 );
@@ -481,18 +481,18 @@ mod tests {
             ];
             let offset = [
                 target[0] as f32 + 0.5 - feet[0],
-                target[1] as f32 + 0.5 - feet[1] - game_simulation::EYE_HEIGHT,
+                target[1] as f32 + 0.5 - feet[1] - exa_simulation::EYE_HEIGHT,
                 target[2] as f32 + 0.5 - feet[2],
             ];
             let yaw = offset[0].atan2(-offset[2]);
             let pitch = offset[1].atan2(offset[0].hypot(offset[2]));
             assert_eq!(
-                game_simulation::targeting::target_block(&grid, feet, yaw, pitch)
+                exa_simulation::targeting::target_block(&grid, feet, yaw, pitch)
                     .unwrap()
                     .position,
                 target
             );
-            assert!(!game_simulation::overlaps(
+            assert!(!exa_simulation::overlaps(
                 stand.map(|v| v as f32 + 0.5),
                 &|p| grid.solid(p)
             ));

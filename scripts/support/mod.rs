@@ -172,6 +172,18 @@ pub fn setting(name: &str) -> Result<Option<OsString>> {
     }
 }
 
+/// EXA_* overrides the legacy CDDA_* environment, including explicit empty values.
+pub fn project_var_os(suffix: &str) -> Option<OsString> {
+    env::var_os(format!("EXA_{suffix}")).or_else(|| env::var_os(format!("CDDA_{suffix}")))
+}
+
+pub fn project_var(suffix: &str) -> std::result::Result<String, env::VarError> {
+    project_var_os(suffix)
+        .ok_or(env::VarError::NotPresent)?
+        .into_string()
+        .map_err(env::VarError::NotUnicode)
+}
+
 pub struct Godot {
     pub editor: PathBuf,
     pub console: PathBuf,
@@ -246,13 +258,13 @@ pub fn same_file_contents(a: &Path, b: &Path) -> io::Result<bool> {
 pub fn build_extension(repo: &Path, target: &Path, release: bool) -> Result {
     let profile = if release { "release" } else { "debug" };
     let mut command = cargo(repo);
-    command.args(["build", "-p", "game-godot", "--jobs", "2"]);
+    command.args(["build", "-p", "exa-godot", "--jobs", "2"]);
     if release {
         command.arg("--release");
     }
     run(&mut command)?;
-    let dest = repo.join("godot/bin").join(profile).join("game_godot.dll");
-    let source = target.join(profile).join("game_godot.dll");
+    let dest = repo.join("godot/bin").join(profile).join("exa_godot.dll");
+    let source = target.join(profile).join("exa_godot.dll");
     fs::create_dir_all(dest.parent().unwrap())?;
     if !same_file_contents(&source, &dest)? {
         fs::copy(&source, &dest).map_err(|e| {

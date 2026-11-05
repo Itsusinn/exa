@@ -1,9 +1,9 @@
 [package]
-name = "game-client-core"
+name = "exa-client-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
-game-simulation = { path = "../simulation" }
-protocol = { path = "../protocol" }
+exa-simulation = { path = "../simulation" }
+exa-protocol = { path = "../protocol" }

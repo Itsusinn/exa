@@ -261,8 +261,8 @@ func reset() -> void:
 	draft_loaded = false
 
 func design_path() -> String:
-	var override := OS.get_environment("CDDA_COLUMN_DESIGN_PATH")
-	return override if not override.is_empty() else "user://column-design.json"
+	var override := preload("res://src/app_config.gd").environment("COLUMN_DESIGN_PATH")
+	return override if not override.is_empty() else preload("res://src/app_config.gd").user_file("column-design.json")
 
 func column_draft() -> Dictionary:
 	return {"diameter":int(fields.diameter.value),"thermo_revision":"butane-pentane-pr78-cp298-r1","spec":draft()}

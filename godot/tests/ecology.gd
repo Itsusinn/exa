@@ -35,8 +35,8 @@ func run() -> void:
 		quit(1)
 		return
 	sites = data
-	OS.set_environment("CDDA_SAVE_PATH",folder.path_join("world3d.bin"))
-	OS.set_environment("CDDA_IDENTITY_PATH",folder.path_join("client.uuid"))
+	OS.set_environment("EXA_SAVE_PATH",folder.path_join("world3d.bin"))
+	OS.set_environment("EXA_IDENTITY_PATH",folder.path_join("client.uuid"))
 	scene = load("res://scenes/main.tscn").instantiate()
 	root.add_child(scene)
 	current_scene = scene

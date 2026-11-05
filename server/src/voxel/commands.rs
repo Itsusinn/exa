@@ -157,7 +157,7 @@ impl VoxelWorld {
                     Command::Teleport(position) => position,
                     _ => unreachable!(),
                 };
-                use game_simulation::{HEIGHT, RADIUS};
+                use exa_simulation::{HEIGHT, RADIUS};
                 anyhow::ensure!(
                     position[0] >= -WORLD_LIMIT as f32 + RADIUS
                         && position[0] < WORLD_LIMIT as f32 - RADIUS
@@ -177,7 +177,7 @@ impl VoxelWorld {
                     }
                 }
                 anyhow::ensure!(
-                    !game_simulation::overlaps_grid(position, &self.terrain),
+                    !exa_simulation::overlaps_grid(position, &self.terrain),
                     "传送落点被方块占用。"
                 );
                 let collides = |other: [f32; 3]| {

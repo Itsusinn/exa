@@ -228,7 +228,7 @@ func _connect_game(address: String, player_name: String, certificate: String) ->
 
 func _singleplayer() -> void:
 	_release_mouse()
-	var save_path := OS.get_environment("CDDA_SAVE_PATH")
+	var save_path := preload("res://src/app_config.gd").environment("SAVE_PATH")
 	if save_path.is_empty(): save_path = "save/world3d.bin"
 	bridge.start_singleplayer(save_path,hud.player_name.text)
 	hud.inventory_open = false

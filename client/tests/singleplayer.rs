@@ -1,5 +1,5 @@
-use client::session::Session;
-use protocol::PlayerInput;
+use exa_client::session::Session;
+use exa_protocol::PlayerInput;
 use std::{
     path::PathBuf,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -65,14 +65,14 @@ fn local_world_connects_plays_saves_unlocks_and_reopens() {
         .log
         .iter()
         .any(|e| e.text.contains("singleplayer session")));
-    session.inventory(protocol::InventoryCommand::Move {
+    session.inventory(exa_protocol::InventoryCommand::Move {
         revision: session.model.inventory.revision,
         from: 0,
         to: 35,
         quantity: 1,
     });
     wait(&mut session, |s| s.model.inventory.slots[35].is_some());
-    session.inventory(protocol::InventoryCommand::Select { slot: 8 });
+    session.inventory(exa_protocol::InventoryCommand::Select { slot: 8 });
     wait(&mut session, |s| s.model.inventory.selected == 8);
     let inventory = session.model.inventory.slots.clone();
     let position = session.model.body.position;
@@ -87,7 +87,7 @@ fn local_world_connects_plays_saves_unlocks_and_reopens() {
     });
     assert!(!session.local_error, "{}", session.status);
     assert!(session.transport.is_none());
-    server::voxel::VoxelWorld::load(&path).unwrap();
+    exa_server::voxel::VoxelWorld::load(&path).unwrap();
     // A new client session reads the same local UUID even after changing name.
     session = Session::default();
     session.identity_path = path.with_extension("client.uuid");
@@ -97,7 +97,7 @@ fn local_world_connects_plays_saves_unlocks_and_reopens() {
     assert_eq!(session.model.inventory.slots, inventory);
     assert_eq!(session.model.inventory.selected, 8);
     assert!(session.model.items.is_empty());
-    assert!(game_simulation::distance(session.model.body.position, position) < 0.2);
+    assert!(exa_simulation::distance(session.model.body.position, position) < 0.2);
     session.disconnect();
     wait(&mut session, |s| {
         !s.local_running() && !s.shutdown_pending()
@@ -120,7 +120,7 @@ fn corrupt_save_is_reported_and_preserved() {
 #[test]
 fn save_failure_is_reported_without_replacing_previous_map() {
     let path = test_path("save-error");
-    server::voxel::VoxelWorld::new(12345)
+    exa_server::voxel::VoxelWorld::new(12345)
         .unwrap()
         .save(&path)
         .unwrap();
@@ -150,5 +150,5 @@ fn cancel_during_start_does_not_connect_a_stale_session() {
     assert!(session.transport.is_none());
     assert!(!session.model.ready);
     assert!(!session.local_error);
-    server::voxel::VoxelWorld::load(&path).unwrap();
+    exa_server::voxel::VoxelWorld::load(&path).unwrap();
 }

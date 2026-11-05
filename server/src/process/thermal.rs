@@ -1,7 +1,7 @@
 //! Coupled, bounded lumped-vessel transport. Hydraulic circuits exchange heat but never material.
 use super::*;
 use crate::thermo;
-use protocol::{ControlState, HeatControlMode, ReadingQuality, ThermalReading};
+use exa_protocol::{ControlState, HeatControlMode, ReadingQuality, ThermalReading};
 
 pub fn charge(
     device: &mut EquipmentSnapshot,
@@ -744,7 +744,7 @@ mod tests {
             tank_size: None,
             column_design: None,
             thermal: (kind == EquipmentKind::HeatExchanger)
-                .then(protocol::ThermalSettings::default),
+                .then(exa_protocol::ThermalSettings::default),
             reading: None,
         }
     }
@@ -772,10 +772,10 @@ mod tests {
     fn column_connected_group_preserves_facts_while_other_group_runs() {
         let mut ds = water_exchanger();
         let mut column = device(100, EquipmentKind::Column, [20, 10, 0]);
-        column.column_design = Some(protocol::ColumnDesign::default());
+        column.column_design = Some(exa_protocol::ColumnDesign::default());
         let mut vessel = device(101, EquipmentKind::Vessel, [18, 14, 0]);
         charge(&mut vessel, [1000.0, 1000.0], 320.0).unwrap();
-        assert!(game_simulation::equipment::connected(
+        assert!(exa_simulation::equipment::connected(
             ports(&vessel)[1],
             ports(&column)[0]
         ));
@@ -806,7 +806,7 @@ mod tests {
             let mut devices = water_exchanger();
             let mut planned = device(100, kind, [20, 10, 0]);
             if kind.is_column() {
-                planned.column_design = Some(protocol::ColumnDesign::default());
+                planned.column_design = Some(exa_protocol::ColumnDesign::default());
             }
             let connection = ports(&planned)[0];
             let mut source = device(
@@ -815,7 +815,7 @@ mod tests {
                 [18, connection.position[1] as i32, 0],
             );
             charge(&mut source, [1000.0, 1000.0], 320.0).unwrap();
-            assert!(game_simulation::equipment::connected(
+            assert!(exa_simulation::equipment::connected(
                 ports(&source)[1],
                 connection
             ));
@@ -835,7 +835,7 @@ mod tests {
     fn sized_sealed_vessel_uses_its_volume_and_centroid() {
         let mut small = device(1, EquipmentKind::Vessel, [0, 10, 0]);
         let mut large = device(2, EquipmentKind::Vessel, [5, 10, 0]);
-        large.tank_size = Some(protocol::TankSize {
+        large.tank_size = Some(exa_protocol::TankSize {
             diameter: 4,
             height: 8,
         });
@@ -869,17 +869,17 @@ mod tests {
             device(2, EquipmentKind::Pipe, [4, 10, 0]),
             device(3, EquipmentKind::Tank, [5, 10, 0]),
         ];
-        ds[0].tank_size = Some(protocol::TankSize {
+        ds[0].tank_size = Some(exa_protocol::TankSize {
             diameter: 4,
             height: 8,
         });
         // D4 nozzles use local z=1.5; align them with the narrow line at z=0.5.
         ds[0].origin[2] = -1;
-        assert!(game_simulation::equipment::connected(
+        assert!(exa_simulation::equipment::connected(
             ports(&ds[0])[1],
             ports(&ds[1])[0]
         ));
-        assert!(game_simulation::equipment::connected(
+        assert!(exa_simulation::equipment::connected(
             ports(&ds[1])[1],
             ports(&ds[2])[0]
         ));
@@ -1128,7 +1128,7 @@ mod tests {
     fn serial_exchangers_pause_without_identity_dependent_transport() {
         let mut ds = water_exchanger();
         ds[4].kind = EquipmentKind::HeatExchanger;
-        ds[4].thermal = Some(protocol::ThermalSettings {
+        ds[4].thermal = Some(exa_protocol::ThermalSettings {
             mode: HeatControlMode::Manual,
             ..Default::default()
         });

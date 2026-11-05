@@ -1,8 +1,10 @@
 //! Bounded industrial steps over immutable facts. Legacy open tanks keep their
 //! single-liquid water model; `thermal` adds sealed hydrocarbon equilibrium and
 //! coupled heat exchange. Inline devices have zero holdup (no pipe filling).
-use game_simulation::equipment::{ports, tank_area_m2, tank_capacity_m3, tank_centroid_height_m};
-use protocol::{EquipmentKind, EquipmentReading, EquipmentSnapshot, MaterialAmount, MAX_EQUIPMENT};
+use exa_protocol::{
+    EquipmentKind, EquipmentReading, EquipmentSnapshot, MaterialAmount, MAX_EQUIPMENT,
+};
+use exa_simulation::equipment::{ports, tank_area_m2, tank_capacity_m3, tank_centroid_height_m};
 use std::collections::{BTreeMap, BTreeSet};
 mod thermal;
 pub use thermal::{charge, heat, solve};
@@ -394,17 +396,17 @@ mod tests {
             device(2, EquipmentKind::Pipe, 4),
             device(3, EquipmentKind::Tank, 5),
         ];
-        ds[0].tank_size = Some(protocol::TankSize {
+        ds[0].tank_size = Some(exa_protocol::TankSize {
             diameter: 4,
             height: 8,
         });
         // D4 nozzles use local z=1.5; align them with the narrow line at z=0.5.
         ds[0].origin[2] = -1;
-        assert!(game_simulation::equipment::connected(
+        assert!(exa_simulation::equipment::connected(
             ports(&ds[0])[1],
             ports(&ds[1])[0]
         ));
-        assert!(game_simulation::equipment::connected(
+        assert!(exa_simulation::equipment::connected(
             ports(&ds[1])[1],
             ports(&ds[2])[0]
         ));
@@ -446,7 +448,7 @@ mod tests {
         let mut explicit = ds.clone();
         for d in &mut explicit {
             if d.kind == EquipmentKind::Tank {
-                d.tank_size = Some(protocol::TankSize {
+                d.tank_size = Some(exa_protocol::TankSize {
                     diameter: 2,
                     height: 3,
                 });

@@ -1,4 +1,4 @@
-# Godot + Rust 架构与验收
+# exa — Godot + Rust 架构与验收
 
 ## 当前架构
 
@@ -28,10 +28,10 @@ Godot InputMap / 鼠标 / UI
 - 地形按区块生成并剔除隐藏面；方块编辑只广播变化区块，客户端重建变化区块和相邻区块，复用未变化的网格及节点；动态实体按 ID 复用节点。
 - 使用 Forward+、SDFGI、SSAO、太阳阴影、PBR 材质、ACES 色调映射和距离雾。Godot 主线程创建资源和节点。菜单、失焦和释放鼠标时清空动作。
 - 默认地图存档 `save/world3d.bin`，保留标记 `DNG3D001`、格式版本 13；MessagePack 清单共同提交 rkyv + memmap2 四类归档。区块版本仍为 3，工业归档版本 6（`DNGIND06`）保存塔体设计、罐体规格、管接头、设备事实、热设置、物性修订和交换账目，烃内能允许为负。版本 1–12 完整验证并备份后在下一次保存升级；版本 8/9/10/11/12 分别按工业 v1/v2/v3/v4/v5 精确布局读取，已有物料/内能/控制/账目保留。备份包含存在的 `.chunks/`、`.players/`、`.entities/`、`.industry/`。不支持的旧物料保留并暂停所属组；物性不匹配或错误归档阻止启动。旧二维存档不迁移。
-- 工业事实置于 `Grid.equipment`；`simulation::equipment` 提供空间占用、精细碰撞、稳定端口/流道和统一射线。`server::process` 保留旧水模型并实现热耦合分组、密闭罐输送和双流换热；`server::thermo` 提供有限正丁烷/正戊烷 PR78 包及 TP/PH/TV/UV，相变只用于该烃包。未新增 crate 或依赖。`server::voxel::industry` 处理事务、结果校验与订阅，`server::industry_data` 保存事实和账目。网络会话每 0.2 秒最多投递一个后台任务，旧结果按事实修订拒绝，运行读数不变时不重复广播；玩家保持 30 Hz。客户端按 ID 复用网格与节点，纯读数变化不重放人物预测。继续测试补给/动力，无反应、燃料、合成或生产经济。设备全世界上限 1024，未建立工业空间索引；这不代表已验证 1024 台真实物性设备的实时性能。
+- 工业事实置于 `Grid.equipment`；`simulation::equipment` 提供空间占用、精细碰撞、稳定端口/流道和统一射线。`exa_server::process` 保留旧水模型并实现热耦合分组、密闭罐输送和双流换热；`exa_server::thermo` 提供有限正丁烷/正戊烷 PR78 包及 TP/PH/TV/UV，相变只用于该烃包。未新增 crate 或依赖。`exa_server::voxel::industry` 处理事务、结果校验与订阅，`exa_server::industry_data` 保存事实和账目。网络会话每 0.2 秒最多投递一个后台任务，旧结果按事实修订拒绝，运行读数不变时不重复广播；玩家保持 30 Hz。客户端按 ID 复用网格与节点，纯读数变化不重放人物预测。继续测试补给/动力，无反应、燃料、合成或生产经济。设备全世界上限 1024，未建立工业空间索引；这不代表已验证 1024 台真实物性设备的实时性能。
 - `simulation::pipe_route` 负责共享有界寻路与结构重验，客户端只在已知区块预览，服务端 `voxel::pipe_laying` 只验证而不再次搜索。两点铺管最多 32 个新管段，起点范围 32 米、终点仍 4.5 米交互；每段保存两个显式接头，无三通。单管架可与同格一根水平管共存。跨高程热回路使用自洽供体密度的集中压头近似，歧义状态暂停并保留；每条罐间流路仍最多一个换热器。
-- `TankSize` 是仅适用于竖直常压罐/密闭罐的建造事实：直径 2–6、高度 3–12，建成后固定；容量、碰撞、压头和能量使用实例规格，默认保留旧行为。`server::assembly` 按请求遍历实际端口图，检查固定四罐双流换热单元；`voxel::assembly` 管理有界回执和结构失效，不调用过程求解，不设置运行门槛。报告是会话派生数据，设备物料与读数不会使其失效。
-- `server::distillation` 提供单进料、恒压、全凝器与平衡再沸器的二元理想级设计计算，复用既有 PR78 包；`network::distillation` 管理独立的单槽后台任务、会话回执及取消。J 打开 Godot 设计界面，报告不写存档、不修改世界物料；计算器本身不驱动物理塔体运行。
+- `TankSize` 是仅适用于竖直常压罐/密闭罐的建造事实：直径 2–6、高度 3–12，建成后固定；容量、碰撞、压头和能量使用实例规格，默认保留旧行为。`exa_server::assembly` 按请求遍历实际端口图，检查固定四罐双流换热单元；`voxel::assembly` 管理有界回执和结构失效，不调用过程求解，不设置运行门槛。报告是会话派生数据，设备物料与读数不会使其失效。
+- `exa_server::distillation` 提供单进料、恒压、全凝器与平衡再沸器的二元理想级设计计算，复用既有 PR78 包；`network::distillation` 管理独立的单槽后台任务、会话回执及取消。J 打开 Godot 设计界面，报告不写存档、不修改世界物料；计算器本身不驱动物理塔体运行。
 - 5B 将结构合法的设计输入固化为 `ColumnDesign` 建造事实：塔径 2–6、板数 2–12、高度板数加 2，进料口随进料板变化。客户端本地设计文件不携带求解结果，服务端重新校验放置参数；已建塔保存规格和物性修订。三罐报告仅检查外部管路，塔体不持料或分离，连接塔的管组暂停并保留事实，独立管组不受影响。
 - 5C 按用户选择补实体冷凝、再沸和回流基础：追加 `RefluxColumn`、`Condenser`、`Reboiler`、`Tee`，保留旧三口塔。`assembly::reflux` 检查九条工艺链路和四个独立密闭罐；三通有 12 种建造朝向，五口设备支持铺管锚点。新设备仍为规划状态，公用工程口不参与结构完整判定，连接组不实际换热、分流或分离。复用既有归档字段及设计文件，不改变库存、物性与能量基准。
 - 已追加授权生存式方块破坏和放置，已追加授权按探索持续扩展世界；不增加合成、游泳、动态流体、昼夜或完整账号系统。浏览器客户端不在当前范围内；按用户要求不执行 WASM 检查，也不要求安装 WASM 编译目标。
@@ -40,13 +40,19 @@ Godot InputMap / 鼠标 / UI
 
 主界面提供单人、多人、设置与退出入口；Esc 覆盖菜单提供继续、设置、返回主界面与退出。单人模式由 `client/local_server` 在后台运行现有 `server` 库，通过临时回环端口和内存证书连接，核心规则与多人相同。关闭流程轮询保存与网络任务完成状态，Godot 主线程不等待线程结束。单人和独立服务端使用相同的世界锁及玩家持久化流程。
 
-Godot-MCP 0.33.0 是可选 .NET 编辑器插件，由 `Dungeon.Editor.csproj` 和 `scripts/godot-mcp.rs` 配置。操作前查询 MCP 的 `projectPath`，确认属于本仓库。MCP 不能替代 Rust 测试或实际游戏验收。
+Godot-MCP 0.33.0 是可选 .NET 编辑器插件，由 `exa.Editor.csproj` 和 `scripts/godot-mcp.rs` 配置。操作前查询 MCP 的 `projectPath`，确认属于本仓库。MCP 不能替代 Rust 测试或实际游戏验收。
 
 Windows 导出使用标准模板与纯运行时暂存项目，排除插件、.NET 配置、凭据和工具文件；不依赖编辑器或 MCP 服务。更新已加载的 DLL 前关闭项目编辑器。具体操作见 README。
 
 ## 验证状态与待办
 
-2026-11-05 首次正式发布完成：[`v0.1.0`](https://github.com/Itsusinn/game/releases/tag/v0.1.0) 对应 `470f129a76a61fd808beca232f7e88bf793b7f10`，[手动运行 `42006610351`](https://github.com/Itsusinn/game/actions/runs/42006610351) 的 build/release 均成功。Windows runner 使用 Rust 1.99.1 和 Godot 4.7.2 标准版；严格检查、234 项 workspace Rust 测试、2 项脚本测试、Godot smoke、908 种工业模型及双客户端 QUIC 检查通过。实际 release 包完成离线启动、连接独立 release 服务端和服务端保存退出检查。已重新下载两个 Release 附件，核对 ZIP 文件清单、BUILD-INFO 的提交与标签；ZIP SHA-256 为 `3c932706c0c46d57a9ba81f8dde7390b1c59d88c38ec7d1927db28660bc86da3`，与清单及 GitHub 资产摘要一致。原始 CI 日志与下载验证附件分别在 `target/ci-v0.1.0-run.log`、`target/release-v0.1.0-verify/`。这次发布未增加 GPU、完整手动键鼠或 DPI/窗口验收证据。
+2026-11-05 项目整体改名为 **exa**：GitHub 仓库及 origin 已更新为 `Itsusinn/exa`；菜单、Godot 项目/编辑器工程、GDExtension、六个 Cargo 包、构建命令、运行程序与手动发布工作流统一使用 exa 名称。发布输出为 `exa.exe`、`exa.pck`、`exa_godot.dll`、`exa-server.exe` 和 `exa-<tag>-windows-x86_64.zip`。源码目录仍按模块职责组织，本地工作区路径仍为 `C:\Workspace\Code\game`。配置优先 `EXA_*` 并兼容 `CDDA_*`；已有玩家 UUID、设置和设计文件沿用旧路径，新安装使用 exa 目录。协议、存档标记、持久化资源 ID 和存档版本不变；已发布的 `v0.1.0` 保留原附件与校验值，本次未另行发布版本。
+
+验证：`just check`、236 项 Rust 测试、2 项脚本测试及 Rust 1.99.0 全 workspace/all-targets 严格 Clippy 通过；Godot smoke（新增命名、配置优先级与旧用户文件兼容检查）、真实双客户端联机、debug/release 导出通过。两种导出均在 Forward+ / RX 7900 XTX 实际启动并生成 exa 菜单截图。release 客户端完成离线启动、连接独立 release 服务端及保存退出，发布 ZIP 文件清单和 SHA-256 生成通过；仅使用旧 `CDDA_*` 的独立 release 服务端也在隔离目录成功生成证书和存档。所有运行数据位于 `target/`，未迁移真实存档或用户文件。
+
+限制与证据：首次发布包联机检查返回失败，客户端日志无脚本/引擎错误，服务器记录已登录和断开；原检查未记录退出码，故无法确定原因。加入退出码诊断后，在新隔离目录复跑通过；未将其归因于改名或声称已修复。工作流保留失败门槛并补充退出码信息。日志为 `target/exa-{check,tests,scripts-tests,clippy-1.99,smoke-final,multiplayer,export-debug,export-release,runtime-checks,runtime-checks-retry}.log`，发布联机保存证据在 `target/exa-release-checks-retry/`，菜单截图为 `target/exa-menu-{debug,release}.png`。本轮未新增完整手动键鼠、DPI/窗口交互或可选 .NET/MCP 编辑器工具验收。
+
+2026-11-05 首次正式发布完成：[`v0.1.0`](https://github.com/Itsusinn/exa/releases/tag/v0.1.0) 对应 `470f129a76a61fd808beca232f7e88bf793b7f10`，[手动运行 `42006610351`](https://github.com/Itsusinn/exa/actions/runs/42006610351) 的 build/release 均成功。Windows runner 使用 Rust 1.99.1 和 Godot 4.7.2 标准版；严格检查、234 项 workspace Rust 测试、2 项脚本测试、Godot smoke、908 种工业模型及双客户端 QUIC 检查通过。实际 release 包完成离线启动、连接独立 release 服务端和服务端保存退出检查。已重新下载两个 Release 附件，核对 ZIP 文件清单、BUILD-INFO 的提交与标签；ZIP SHA-256 为 `3c932706c0c46d57a9ba81f8dde7390b1c59d88c38ec7d1927db28660bc86da3`，与清单及 GitHub 资产摘要一致。原始 CI 日志与下载验证附件分别在 `target/ci-v0.1.0-run.log`、`target/release-v0.1.0-verify/`。这次发布未增加 GPU、完整手动键鼠或 DPI/窗口验收证据。
 
 2026-11-05 首次远端发布兼容修复：手动发布运行 `42005206390` 在 Rust 1.99 系列的严格 Clippy 阶段失败；`godot = 0.5.5` 自动初始化生成 `base: base`，触发 [上游已记录的宏误报](https://github.com/godot-rust/gdext/issues/1713)。仅将桥接类的私有 `Base<Node>` 字段改名为 `godot_base`，由同一宏按类型识别；保留初始化、生命周期、协议和玩法行为，不关闭 lint。已用 Rust 1.99.0 通过全 workspace/all-targets 严格 Clippy 和格式检查，日志 `target/ci-clippy-1.99.log`；后续发布验证结果见上条。
 

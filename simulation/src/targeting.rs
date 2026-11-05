@@ -18,7 +18,7 @@ pub fn target_block(map: &Grid, feet: [f32; 3], yaw: f32, pitch: f32) -> Option<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use protocol::STONE;
+    use exa_protocol::STONE;
     #[test]
     fn first_hit_face_range_unknown_and_invalid_angles() {
         let mut map = Grid::empty();

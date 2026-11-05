@@ -2,16 +2,16 @@
 
 importer="texture"
 type="CompressedTexture2D"
-uid="uid://c3ae2b1copduo"
-path="res://.godot/imported/frontier_backdrop.svg-986237a79cdabf23db6d4315f8f92d20.ctex"
+uid="uid://ci3jne7m0824d"
+path="res://.godot/imported/exa_background.png-d6a8c63808396b65096af9a928a06e23.ctex"
 metadata={
 "vram_texture": false
 }
 
 [deps]
 
-source_file="res://src/frontier_backdrop.svg"
-dest_files=["res://.godot/imported/frontier_backdrop.svg-986237a79cdabf23db6d4315f8f92d20.ctex"]
+source_file="res://materials/exa_background.png"
+dest_files=["res://.godot/imported/exa_background.png-d6a8c63808396b65096af9a928a06e23.ctex"]
 
 [params]
 
@@ -38,6 +38,3 @@ process/hdr_as_srgb=false
 process/hdr_clamp_exposure=false
 process/size_limit=0
 detect_3d/compress_to=1
-svg/scale=1.0
-editor/scale_with_editor_scale=false
-editor/convert_colors_with_editor_theme=false

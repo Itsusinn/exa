@@ -1,9 +1,9 @@
 [package]
-name = "game-simulation"
+name = "exa-simulation"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
-protocol = { path = "../protocol" }
+exa-protocol = { path = "../protocol" }
 rapier3d = { version = "=0.36.1", features = ["enhanced-determinism"] }

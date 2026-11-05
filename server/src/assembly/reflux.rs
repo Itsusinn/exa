@@ -299,7 +299,7 @@ pub(super) fn inspect(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use game_simulation::equipment::occupied_cells;
+    use exa_simulation::equipment::occupied_cells;
 
     #[test]
     fn reflux_blueprint_has_nine_role_checked_lines_and_nonoverlapping_geometry() {

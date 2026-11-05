@@ -179,7 +179,7 @@ impl VoxelWorld {
         };
         anyhow::ensure!(
             p.hp > 0
-                && game_simulation::container_reachable(&self.terrain, p.body.position, position),
+                && exa_simulation::container_reachable(&self.terrain, p.body.position, position),
             "箱子太远或被遮挡。"
         );
         let c = self.containers.get_mut(&position).context("箱子不存在。")?;
@@ -251,9 +251,9 @@ impl VoxelWorld {
                     let moved = if let Some(to) = target {
                         let destination =
                             bag.slots.get_mut(to as usize).context("无效目标槽位。")?;
-                        game_simulation::inventory::insert(std::slice::from_mut(destination), &item)
+                        exa_simulation::inventory::insert(std::slice::from_mut(destination), &item)
                     } else {
-                        game_simulation::inventory::insert(&mut bag.slots, &item)
+                        exa_simulation::inventory::insert(&mut bag.slots, &item)
                     };
                     anyhow::ensure!(moved == quantity, "物品栏空间不足或目标物品不同。");
                     contents[index].quantity -= quantity;

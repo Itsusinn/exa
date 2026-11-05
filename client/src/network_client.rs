@@ -1,7 +1,7 @@
 //! Desktop QUIC adapter. A persistent reader owns the receive stream; sending
 //! actions cannot cancel a partially consumed length-prefixed frame.
 use anyhow::{Context, Result};
-use protocol::{ClientMessage, ServerMessage, PROTOCOL_VERSION};
+use exa_protocol::{ClientMessage, ServerMessage, PROTOCOL_VERSION};
 use quinn::{Connection, Endpoint, RecvStream, SendStream};
 use std::{
     net::SocketAddr,
@@ -76,7 +76,7 @@ impl QuicSession {
         let finished = Arc::new(AtomicBool::new(false));
         let worker_finished = finished.clone();
         let _ = std::thread::Builder::new()
-            .name("game-network".into())
+            .name("exa-network".into())
             .spawn(move || {
                 let _finished = Finished(worker_finished);
                 let player_uuid = match crate::identity::load_or_create(&identity) {

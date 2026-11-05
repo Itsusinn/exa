@@ -25,8 +25,8 @@ func click(button: MouseButton) -> void:
 	scene._unhandled_input(event)
 func run() -> void:
 	var path := ProjectSettings.globalize_path("res://../target/godot-edit-%d/world3d.bin" % Time.get_ticks_usec())
-	OS.set_environment("CDDA_SAVE_PATH",path)
-	OS.set_environment("CDDA_IDENTITY_PATH",path.get_base_dir().path_join("client.uuid"))
+	OS.set_environment("EXA_SAVE_PATH",path)
+	OS.set_environment("EXA_IDENTITY_PATH",path.get_base_dir().path_join("client.uuid"))
 	scene = load("res://scenes/main.tscn").instantiate()
 	root.add_child(scene)
 	current_scene = scene

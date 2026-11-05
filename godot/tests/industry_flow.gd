@@ -78,8 +78,8 @@ func run() -> void:
 		push_error("Could not copy isolated industrial fixture")
 		quit(1)
 		return
-	OS.set_environment("CDDA_SAVE_PATH",path)
-	OS.set_environment("CDDA_IDENTITY_PATH",path.get_base_dir().path_join("graphics-client.uuid"))
+	OS.set_environment("EXA_SAVE_PATH",path)
+	OS.set_environment("EXA_IDENTITY_PATH",path.get_base_dir().path_join("graphics-client.uuid"))
 	scene = load("res://scenes/main.tscn").instantiate()
 	root.add_child(scene)
 	current_scene = scene

@@ -6,7 +6,7 @@ use std::{
 };
 
 pub fn default_path() -> PathBuf {
-    if let Some(path) = std::env::var_os("CDDA_IDENTITY_PATH") {
+    if let Some(path) = exa_server::config::var_os("IDENTITY_PATH") {
         return path.into();
     }
     let base = std::env::var_os("APPDATA")
@@ -14,7 +14,22 @@ pub fn default_path() -> PathBuf {
         .or_else(|| std::env::var_os("XDG_DATA_HOME").map(PathBuf::from))
         .or_else(|| std::env::var_os("HOME").map(|p| PathBuf::from(p).join(".local/share")))
         .unwrap_or_else(|| PathBuf::from("save"));
-    base.join("Dungeon3D/client.uuid")
+    default_path_in(&base)
+}
+
+fn default_path_in(base: &Path) -> PathBuf {
+    let current = base.join("exa/client.uuid");
+    let legacy = base.join("Dungeon3D/client.uuid");
+    // An unreadable or malformed identity must fail when opened, never create a new player.
+    let present = |path: &Path| match std::fs::symlink_metadata(path) {
+        Ok(_) => true,
+        Err(error) => error.kind() != std::io::ErrorKind::NotFound,
+    };
+    if !present(&current) && present(&legacy) {
+        legacy
+    } else {
+        current
+    }
 }
 
 pub fn load_or_create(path: &Path) -> Result<[u8; 16]> {
@@ -62,6 +77,26 @@ pub fn load_or_create(path: &Path) -> Result<[u8; 16]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rename_preserves_legacy_identity_and_prefers_an_existing_exa_identity() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../target/identity-tests")
+            .join(uuid::Uuid::new_v4().to_string());
+        let current = root.join("exa/client.uuid");
+        let legacy = root.join("Dungeon3D/client.uuid");
+        assert_eq!(default_path_in(&root), current);
+        let old_id = load_or_create(&legacy).unwrap();
+        assert_eq!(default_path_in(&root), legacy);
+        assert_eq!(load_or_create(&default_path_in(&root)).unwrap(), old_id);
+        std::fs::write(&legacy, "broken identity").unwrap();
+        assert!(load_or_create(&default_path_in(&root)).is_err());
+        assert!(!current.exists());
+        let new_id = load_or_create(&current).unwrap();
+        assert_eq!(default_path_in(&root), current);
+        assert_eq!(load_or_create(&default_path_in(&root)).unwrap(), new_id);
+        assert_eq!(std::fs::read_to_string(legacy).unwrap(), "broken identity");
+    }
     #[test]
     fn identity_survives_reopen_and_corruption_is_not_replaced() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))

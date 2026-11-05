@@ -7,7 +7,7 @@ use tokio::sync::{mpsc, Mutex};
 use tracing::{debug, error, info, instrument, span, warn, Level};
 use tracing_futures::Instrument;
 
-use protocol::{ClientMessage, ServerMessage};
+use exa_protocol::{ClientMessage, ServerMessage};
 
 use crate::voxel::VoxelWorld;
 mod distillation;
@@ -53,7 +53,7 @@ pub async fn run_server(
 ) -> Result<()> {
     let (endpoint, certificate) = make_server_endpoint(addr)?;
     let cert_path = std::path::PathBuf::from(
-        std::env::var("CDDA_CERT_PATH").unwrap_or_else(|_| "save/server.cert.der".into()),
+        crate::config::var_os("CERT_PATH").unwrap_or_else(|| "save/server.cert.der".into()),
     );
     if let Some(parent) = cert_path.parent().filter(|p| !p.as_os_str().is_empty()) {
         std::fs::create_dir_all(parent)?;
@@ -70,7 +70,7 @@ pub async fn serve_endpoint(
     info!("Server listening");
 
     tokio::pin!(shutdown);
-    let mut tick = tokio::time::interval(std::time::Duration::from_secs_f32(game_simulation::DT));
+    let mut tick = tokio::time::interval(std::time::Duration::from_secs_f32(exa_simulation::DT));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut connections = tokio::task::JoinSet::new();
     let mut checkpoint = tokio::time::interval(std::time::Duration::from_secs(30));
@@ -180,7 +180,7 @@ async fn handle_connection(
             player_uuid,
         } => {
             anyhow::ensure!(
-                version == protocol::PROTOCOL_VERSION,
+                version == exa_protocol::PROTOCOL_VERSION,
                 "protocol version mismatch"
             );
             anyhow::ensure!(player_name.len() <= 128, "player name too long");

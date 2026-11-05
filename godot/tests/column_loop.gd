@@ -52,9 +52,9 @@ func run() -> void:
 	if source.is_empty() or not copy_directory(source.get_base_dir(),path.get_base_dir()):
 		quit(1)
 		return
-	OS.set_environment("CDDA_SAVE_PATH",path)
-	OS.set_environment("CDDA_IDENTITY_PATH",path.get_base_dir().path_join("loop-client.uuid"))
-	OS.set_environment("CDDA_COLUMN_DESIGN_PATH",path.get_base_dir().path_join("design.json"))
+	OS.set_environment("EXA_SAVE_PATH",path)
+	OS.set_environment("EXA_IDENTITY_PATH",path.get_base_dir().path_join("loop-client.uuid"))
+	OS.set_environment("EXA_COLUMN_DESIGN_PATH",path.get_base_dir().path_join("design.json"))
 	scene = load("res://scenes/main.tscn").instantiate()
 	root.add_child(scene)
 	current_scene = scene

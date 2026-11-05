@@ -1,8 +1,8 @@
 //! Real QUIC column construction, private structural reports, and restart fixture.
-use client::network_client::{connect_endpoint, read_message, write_message};
-use game_client_core::voxel::Client3d;
-use protocol::*;
-use server::{
+use exa_client::network_client::{connect_endpoint, read_message, write_message};
+use exa_client_core::voxel::Client3d;
+use exa_protocol::*;
+use exa_server::{
     network::{make_server_endpoint, serve_endpoint},
     voxel::VoxelWorld,
 };
@@ -84,7 +84,7 @@ impl Peer {
         tokio::time::sleep(Duration::from_millis(550)).await;
         self.chat(&format!("/tp {} {} {}", p[0], p[1], p[2])).await;
         self.wait(|m| {
-            game_simulation::distance(m.body.position, p) < 0.02 && m.terrain.nearby_known(p)
+            exa_simulation::distance(m.body.position, p) < 0.02 && m.terrain.nearby_known(p)
         })
         .await;
     }
@@ -243,7 +243,7 @@ fn seed_world(path: &std::path::Path) -> VoxelWorld {
     // Support raised vessels without filling any occupied pipe or equipment cells.
     let occupied: std::collections::BTreeSet<_> = devices
         .values()
-        .flat_map(game_simulation::equipment::occupied_cells)
+        .flat_map(exa_simulation::equipment::occupied_cells)
         .collect();
     for device in devices
         .values()
@@ -266,9 +266,9 @@ fn seed_world(path: &std::path::Path) -> VoxelWorld {
         .unwrap()
         .unwrap()
         .path();
-    let old = server::industry_data::read(&archive_path).unwrap();
+    let old = exa_server::industry_data::read(&archive_path).unwrap();
     world.terrain.equipment = devices;
-    let archive = server::industry_data::IndustryArchive::capture(
+    let archive = exa_server::industry_data::IndustryArchive::capture(
         &world.terrain,
         old.seed,
         old.last_update,
@@ -279,7 +279,7 @@ fn seed_world(path: &std::path::Path) -> VoxelWorld {
     )
     .unwrap();
     std::fs::remove_file(&archive_path).unwrap();
-    server::industry_data::write_new(&archive_path, &archive).unwrap();
+    exa_server::industry_data::write_new(&archive_path, &archive).unwrap();
     VoxelWorld::load(path).unwrap()
 }
 

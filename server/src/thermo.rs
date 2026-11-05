@@ -4,7 +4,7 @@
 //! the legacy water datum. No aqueous mixing, solids, critical-region continuation,
 //! chemistry, or claim of parity with the complete IChemE property package.
 //! See assets/thermo/README.md for data provenance and numerical qualification.
-use protocol::MaterialAmount;
+use exa_protocol::MaterialAmount;
 use serde::Deserialize;
 use std::sync::OnceLock;
 

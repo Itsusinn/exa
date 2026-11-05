@@ -1,8 +1,8 @@
 //! Real QUIC coverage for equipment identity, streaming and atomic inventory edits.
-use client::network_client::{connect_endpoint, read_message, write_message};
-use game_client_core::voxel::Client3d;
-use protocol::*;
-use server::{
+use exa_client::network_client::{connect_endpoint, read_message, write_message};
+use exa_client_core::voxel::Client3d;
+use exa_protocol::*;
+use exa_server::{
     network::{make_server_endpoint, serve_endpoint},
     voxel::VoxelWorld,
 };
@@ -37,7 +37,7 @@ impl Peer {
     async fn point_port(&mut self, anchor: PipeAnchor) -> (f32, f32) {
         let point = {
             let m = self.model.lock().await;
-            game_simulation::equipment::ports(&m.terrain.equipment[&anchor.id])
+            exa_simulation::equipment::ports(&m.terrain.equipment[&anchor.id])
                 [usize::from(anchor.port)]
             .position
         };
@@ -141,7 +141,7 @@ impl Peer {
         ))
         .await;
         self.wait(|m| {
-            game_simulation::distance(m.body.position, position) < 0.01
+            exa_simulation::distance(m.body.position, position) < 0.01
                 && m.terrain.nearby_known(position)
         })
         .await;
@@ -465,7 +465,7 @@ async fn industrial_parameterized_tanks_and_assembly_emit_graphics_fixture() {
         assert_eq!(report, other);
         assert_eq!(
             report,
-            server::assembly::inspect(&manager.lock().await.terrain.equipment, hx, 1)
+            exa_server::assembly::inspect(&manager.lock().await.terrain.equipment, hx, 1)
         );
 
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -481,7 +481,7 @@ async fn industrial_parameterized_tanks_and_assembly_emit_graphics_fixture() {
             }
             assert_eq!(restored.industry_ledger(), world.industry_ledger());
             assert_eq!(
-                server::assembly::inspect(&restored.terrain.equipment, hx, 1).status,
+                exa_server::assembly::inspect(&restored.terrain.equipment, hx, 1).status,
                 AssemblyStatus::Complete
             );
             restored
@@ -645,9 +645,9 @@ async fn industrial_pipe_routes_are_atomic_and_emit_graphics_fixture() {
         };
         let (cells, ends) = {
             let m = first.model.lock().await;
-            let cells = game_simulation::pipe_route::plan(&m.terrain, start, end).unwrap();
+            let cells = exa_simulation::pipe_route::plan(&m.terrain, start, end).unwrap();
             let ends =
-                game_simulation::pipe_route::validate(&m.terrain, start, end, &cells).unwrap();
+                exa_simulation::pipe_route::validate(&m.terrain, start, end, &cells).unwrap();
             (cells, ends)
         };
         assert!(cells.len() <= MAX_PIPE_ROUTE);
@@ -846,7 +846,7 @@ impl Drop for Peer {
 fn aim(feet: [f32; 3], point: [f32; 3]) -> (f32, f32) {
     let d = [
         point[0] - feet[0],
-        point[1] - feet[1] - game_simulation::EYE_HEIGHT,
+        point[1] - feet[1] - exa_simulation::EYE_HEIGHT,
         point[2] - feet[2],
     ];
     (d[0].atan2(-d[2]), d[1].atan2(d[0].hypot(d[2])))
@@ -915,10 +915,10 @@ async fn industrial_equipment_streams_to_two_clients_and_survives_reopen() {
             facts(&second.model.lock().await.terrain.equipment[&tank.id]),
             facts(&tank)
         );
-        assert!(game_simulation::equipment::occupied_cells(&tank)
+        assert!(exa_simulation::equipment::occupied_cells(&tank)
             .iter()
             .any(|p| p[0] == -1));
-        assert!(game_simulation::equipment::occupied_cells(&tank)
+        assert!(exa_simulation::equipment::occupied_cells(&tank)
             .iter()
             .any(|p| p[0] == 0));
         assert_eq!(
@@ -1120,7 +1120,7 @@ async fn industrial_flow_controls_conserve_and_emit_graphics_fixture() {
             .terrain
             .equipment
             .values()
-            .map(server::process::stored_energy_j)
+            .map(exa_server::process::stored_energy_j)
             .sum();
         first.teleport([-0.5, 81.0, 19.5]).await;
         first.configure(pump, true, 1.0, false).await;
@@ -1193,7 +1193,7 @@ async fn industrial_flow_controls_conserve_and_emit_graphics_fixture() {
                 .terrain
                 .equipment
                 .values()
-                .map(server::process::stored_energy_j)
+                .map(exa_server::process::stored_energy_j)
                 .sum();
             let ledger = world.industry_ledger();
             assert!(ledger.pump_work_j > 0.0);
@@ -1240,13 +1240,13 @@ async fn industrial_flow_controls_conserve_and_emit_graphics_fixture() {
                 .terrain
                 .equipment
                 .values()
-                .map(server::process::water_moles)
+                .map(exa_server::process::water_moles)
                 .sum();
             let energy: f64 = world
                 .terrain
                 .equipment
                 .values()
-                .map(server::process::stored_energy_j)
+                .map(exa_server::process::stored_energy_j)
                 .sum();
             assert!(ledger.drained_moles > 0.0);
             assert!(
@@ -1483,7 +1483,9 @@ async fn industrial_thermal_controls_sync_and_emit_graphics_fixture() {
             for z in [16, 18] {
                 let n: f64 = [-4, 3]
                     .into_iter()
-                    .map(|x| server::process::water_moles(&world.terrain.equipment[&ids[&(x, z)]]))
+                    .map(|x| {
+                        exa_server::process::water_moles(&world.terrain.equipment[&ids[&(x, z)]])
+                    })
                     .sum();
                 assert!((n - 6000.0 / 0.01801528).abs() < 1e-5);
             }

@@ -39,9 +39,9 @@ func run() -> void:
 		quit(1)
 		return
 	chest_position = Vector3(fixture.chest[0],fixture.chest[1],fixture.chest[2])
-	var previous_save := OS.get_environment("CDDA_SAVE_PATH")
+	var previous_save := preload("res://src/app_config.gd").environment("SAVE_PATH")
 	var path := ProjectSettings.globalize_path("res://../target/godot-chest-%d/world3d.bin" % Time.get_ticks_usec())
-	OS.set_environment("CDDA_SAVE_PATH",path)
+	OS.set_environment("EXA_SAVE_PATH",path)
 	scene = load("res://scenes/main.tscn").instantiate()
 	root.add_child(scene)
 	current_scene = scene
@@ -141,13 +141,13 @@ func run() -> void:
 	check(scene.state.items.is_empty(),"collected ground item stays collected after restart")
 	print("GODOT_CONTAINER_RESULT=", "FAIL" if failed else "PASS")
 	print("CONTAINER_TEST_SAVE=",path)
-	if OS.get_environment("CDDA_CHEST_MANUAL") == "1" and not failed:
+	if preload("res://src/app_config.gd").environment("CHEST_MANUAL") == "1" and not failed:
 		scene._close_container()
 		scene.set_process(true)
 		return
 	scene._leave_game(false)
 	await settle(func(): return scene.pending_action.is_empty())
-	OS.set_environment("CDDA_SAVE_PATH",previous_save)
+	OS.set_environment("EXA_SAVE_PATH",previous_save)
 	scene.queue_free()
 	await process_frame
 	quit(1 if failed else 0)

@@ -1,6 +1,6 @@
 //! Shared test-only reflux process layout. Coordinates are relative to `offset`.
-use game_simulation::equipment::{face_normal, ports};
-use protocol::{ColumnDesign, EquipmentKind, EquipmentSnapshot};
+use exa_protocol::{ColumnDesign, EquipmentKind, EquipmentSnapshot};
+use exa_simulation::equipment::{face_normal, ports};
 use std::collections::BTreeMap;
 
 fn device(id: u64, kind: EquipmentKind, origin: [i32; 3]) -> EquipmentSnapshot {

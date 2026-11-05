@@ -2,7 +2,7 @@
 //! The client searches known terrain. The server accepts only a complete checked
 //! proposal; actor overlap, inventory and the player session are server concerns.
 use crate::{equipment, grid::Grid, EYE_HEIGHT};
-use protocol::{EquipmentKind, PipeAnchor, AIR, BLOCK_REACH, MAX_PIPE_ROUTE};
+use exa_protocol::{EquipmentKind, PipeAnchor, AIR, BLOCK_REACH, MAX_PIPE_ROUTE};
 use std::{
     cmp::Reverse,
     collections::{BTreeMap, BTreeSet, BinaryHeap},
@@ -90,7 +90,7 @@ pub fn anchor_cell(grid: &Grid, anchor: PipeAnchor) -> Result<Cell, String> {
     let port = anchor_port(grid, anchor)?;
     let cell =
         std::array::from_fn(|i| (port.position[i] + port.normal[i] as f32 * 0.5).floor() as i32);
-    if !protocol::valid_voxel(cell) || cell[1] == 0 {
+    if !exa_protocol::valid_voxel(cell) || cell[1] == 0 {
         return Err("pipe anchor faces outside build bounds".into());
     }
     Ok(cell)
@@ -184,7 +184,7 @@ pub fn validate(
     let occupied = occupied(grid);
     let mut result = Vec::with_capacity(cells.len());
     for (i, &cell) in cells.iter().enumerate() {
-        if !protocol::valid_voxel(cell) || !seen.insert(cell) {
+        if !exa_protocol::valid_voxel(cell) || !seen.insert(cell) {
             return Err("pipe route repeats a cell or exceeds world bounds".into());
         }
         let mut ends = [
@@ -296,7 +296,7 @@ pub fn plan(grid: &Grid, start: PipeAnchor, end: PipeAnchor) -> Result<Vec<Cell>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use protocol::{EquipmentSnapshot, STONE};
+    use exa_protocol::{EquipmentSnapshot, STONE};
 
     fn pipe(id: u64, origin: Cell, axis: u8) -> EquipmentSnapshot {
         EquipmentSnapshot {

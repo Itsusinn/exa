@@ -129,7 +129,7 @@ impl VoxelWorld {
 
     fn position_available(&self, position: [f32; 3], exclude: u32) -> bool {
         valid_position(position)
-            && !game_simulation::overlaps_grid(position, &self.terrain)
+            && !exa_simulation::overlaps_grid(position, &self.terrain)
             && self
                 .players
                 .iter()

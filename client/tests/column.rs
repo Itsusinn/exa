@@ -1,8 +1,8 @@
 //! Real QUIC column construction, private structural reports, and restart fixture.
-use client::network_client::{connect_endpoint, read_message, write_message};
-use game_client_core::voxel::Client3d;
-use protocol::*;
-use server::{
+use exa_client::network_client::{connect_endpoint, read_message, write_message};
+use exa_client_core::voxel::Client3d;
+use exa_protocol::*;
+use exa_server::{
     network::{make_server_endpoint, serve_endpoint},
     voxel::VoxelWorld,
 };
@@ -81,7 +81,7 @@ impl Peer {
         tokio::time::sleep(Duration::from_millis(550)).await;
         self.chat(&format!("/tp {} {} {}", p[0], p[1], p[2])).await;
         self.wait(|m| {
-            game_simulation::distance(m.body.position, p) < 0.02 && m.terrain.nearby_known(p)
+            exa_simulation::distance(m.body.position, p) < 0.02 && m.terrain.nearby_known(p)
         })
         .await;
     }

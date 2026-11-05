@@ -14,10 +14,10 @@ mod spawn_tests;
 mod streaming;
 mod terrain;
 use anyhow::{Context, Result};
+use exa_protocol::*;
 #[cfg(test)]
-use game_simulation::overlaps;
-use game_simulation::{clear_line, clear_line_grid, distance, grid::Grid};
-use protocol::*;
+use exa_simulation::overlaps;
+use exa_simulation::{clear_line, clear_line_grid, distance, grid::Grid};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
@@ -361,7 +361,7 @@ impl VoxelWorld {
             };
             p.yaw = input.yaw;
             p.pitch = input.pitch;
-            game_simulation::step_player_in_grid(
+            exa_simulation::step_player_in_grid(
                 &mut p.body,
                 input,
                 p.flying,
@@ -418,7 +418,7 @@ impl VoxelWorld {
                 .filter(|a| a.0 != npc.actor.id)
                 .map(|a| a.1)
                 .collect();
-            game_simulation::step_in_grid(&mut npc.body, input, &self.terrain, &obstacles);
+            exa_simulation::step_in_grid(&mut npc.body, input, &self.terrain, &obstacles);
             if let Some(a) = occupants.iter_mut().find(|a| a.0 == npc.actor.id) {
                 a.1 = npc.body.position;
             }
@@ -447,7 +447,7 @@ impl VoxelWorld {
         }
         for p in self.players.values_mut() {
             if p.open_container.is_some_and(|position| {
-                !game_simulation::container_reachable(&self.terrain, p.body.position, position)
+                !exa_simulation::container_reachable(&self.terrain, p.body.position, position)
             }) {
                 p.open_container = None;
                 p.container_error = "距离箱子过远或被遮挡，已关闭。".into();
@@ -514,7 +514,7 @@ impl VoxelWorld {
             return;
         }
         self.players.get_mut(&id).unwrap().attack_tick = self.tick;
-        let eye = [pos[0], pos[1] + game_simulation::EYE_HEIGHT, pos[2]];
+        let eye = [pos[0], pos[1] + exa_simulation::EYE_HEIGHT, pos[2]];
         let direction = [
             input.yaw.sin() * input.pitch.cos(),
             input.pitch.sin(),
@@ -566,7 +566,7 @@ impl VoxelWorld {
     pub fn load(path: &Path) -> Result<Self> {
         Self::validate_generation()?;
         let bytes = std::fs::read(path).context("read 3D world")?;
-        anyhow::ensure!(bytes.starts_with(b"DNG3D001"),"not a 3D save; legacy 2D saves are preserved and require explicit migration. Use a new CDDA_SAVE_PATH");
+        anyhow::ensure!(bytes.starts_with(b"DNG3D001"),"not a 3D save; legacy 2D saves are preserved and require explicit migration. Use a new EXA_SAVE_PATH");
         let saved: Save = rmp_serde::from_slice(&bytes[8..]).context("decode 3D world")?;
         anyhow::ensure!(
             matches!(saved.version, 1..=13)

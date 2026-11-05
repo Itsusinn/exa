@@ -35,19 +35,19 @@ func stats(values: Array[float]) -> Dictionary:
 		if v > 33.3: over += 1
 	return {"p50_ms":values[values.size()/2], "p95_ms":values[int(values.size()*0.95)], "max_ms":values.back(), "over_33ms":over}
 func run() -> void:
-	var label := OS.get_environment("CDDA_PERF_LABEL")
+	var label := preload("res://src/app_config.gd").environment("PERF_LABEL")
 	if label.is_empty(): label = "current"
 	var folder := ProjectSettings.globalize_path("res://../target/streaming-perf-%s-%d" % [label,Time.get_ticks_usec()])
 	DirAccess.make_dir_recursive_absolute(folder)
-	OS.set_environment("CDDA_SAVE_PATH",folder.path_join("world3d.bin"))
-	OS.set_environment("CDDA_IDENTITY_PATH",folder.path_join("client.uuid"))
+	OS.set_environment("EXA_SAVE_PATH",folder.path_join("world3d.bin"))
+	OS.set_environment("EXA_IDENTITY_PATH",folder.path_join("client.uuid"))
 	scene = MeasuredWorld.new()
 	root.add_child(scene)
 	current_scene = scene
 	scene.set_process(false)
 	scene.hud.menu.loading_settings = true
-	if OS.get_environment("CDDA_PERF_GI") == "on": scene.environment.sdfgi_enabled = true
-	elif OS.get_environment("CDDA_PERF_GI") == "off": scene.environment.sdfgi_enabled = false
+	if preload("res://src/app_config.gd").environment("PERF_GI") == "on": scene.environment.sdfgi_enabled = true
+	elif preload("res://src/app_config.gd").environment("PERF_GI") == "off": scene.environment.sdfgi_enabled = false
 	scene._singleplayer()
 	var deadline := Time.get_ticks_msec() + 20000
 	while not scene.state.get("ready",false) or scene.state.get("loaded_sections",0) != 392 or not scene.terrain_pending.is_empty():

@@ -1,5 +1,5 @@
 use super::*;
-use game_simulation::inventory::{insert, move_stack, quick_move};
+use exa_simulation::inventory::{insert, move_stack, quick_move};
 
 pub(super) fn next_revision(revision: u64) -> Result<u64> {
     revision

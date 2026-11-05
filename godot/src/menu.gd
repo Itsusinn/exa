@@ -9,7 +9,7 @@ signal lighting_changed(enabled: bool)
 
 const Palette = preload("res://src/interface_theme.gd")
 const Tile = preload("res://src/menu_tile.gd")
-const Backdrop = preload("res://materials/frontier_background.png")
+const Backdrop = preload("res://materials/exa_background.png")
 const GlassShader = preload("res://src/menu_glass.gdshader")
 const ACCENT := Palette.ACCENT
 var page := "home"
@@ -63,7 +63,7 @@ func _ready() -> void:
 	badge.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(badge)
 	var header := Label.new()
-	header.text = "FRONTIER"
+	header.text = "exa"
 	header.position = Vector2(52, 29)
 	header.add_theme_font_override("font", Palette.technical_font())
 	header.add_theme_font_size_override("font_size", 20)
@@ -94,8 +94,8 @@ func _ready() -> void:
 	hero.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(hero)
 	_text(hero, "荒野之间", 15).modulate = ACCENT
-	_text(hero, "方块边境", 46).add_theme_font_override("font", Palette.display_font())
-	_text(hero, "FRONTIER", 16).add_theme_font_override("font", Palette.technical_font())
+	_text(hero, "exa", 46).add_theme_font_override("font", Palette.display_font())
+	_text(hero, "探索 · 建造 · 生存", 16).add_theme_font_override("font", Palette.technical_font())
 	_text(hero, "在林地与石墙之间，开始新的旅程。", 15).modulate = Palette.MUTED
 	pause_title = VBoxContainer.new()
 	pause_title.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -208,7 +208,7 @@ func _ready() -> void:
 	feedback.offset_top = -44
 	feedback.offset_bottom = -16
 	feedback.modulate = ACCENT
-	settings.load("user://settings.cfg")
+	settings.load(preload("res://src/app_config.gd").user_file("settings.cfg"))
 	fov_slider.value = clampf(float(settings.get_value("video", "fov", 72)), 55, 100)
 	sensitivity.value = clampf(float(settings.get_value("input", "sensitivity", 1.0)), 0.5, 2.0)
 	gi_toggle.button_pressed = bool(settings.get_value("video", "gi", true))
@@ -290,7 +290,7 @@ func _save_settings() -> void:
 	settings.set_value("video", "antialiasing", AA_MODES[antialiasing.selected])
 	settings.set_value("video", "fullscreen", fullscreen.button_pressed)
 	settings.set_value("input", "sensitivity", sensitivity.value)
-	if settings.save("user://settings.cfg") != OK: feedback.text = "设置保存失败，请检查用户目录权限。"
+	if settings.save(preload("res://src/app_config.gd").user_file("settings.cfg")) != OK: feedback.text = "设置保存失败，请检查用户目录权限。"
 
 func _text(parent: Node, text: String, font_size: int) -> Label:
 	var result := Label.new()

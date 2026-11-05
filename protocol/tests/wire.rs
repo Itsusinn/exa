@@ -1,4 +1,4 @@
-use protocol::{ClientMessage, ServerMessage};
+use exa_protocol::{ClientMessage, ServerMessage};
 
 #[test]
 fn streaming_messages_preserve_signed_coordinates() {
@@ -9,7 +9,7 @@ fn streaming_messages_preserve_signed_coordinates() {
         ServerMessage::Chunk3d {
             origin: [-16, 112, -32],
             blocks: (0..4096)
-                .map(|i| (i % protocol::BLOCK_IDS.len()) as u8)
+                .map(|i| (i % exa_protocol::BLOCK_IDS.len()) as u8)
                 .collect(),
         },
     ] {
@@ -18,12 +18,12 @@ fn streaming_messages_preserve_signed_coordinates() {
             m
         );
     }
-    assert_eq!(protocol::column_at([-0.1, 7.0, -16.1]), [-1, -2]);
+    assert_eq!(exa_protocol::column_at([-0.1, 7.0, -16.1]), [-1, -2]);
 }
 
 #[test]
 fn block_edits_and_item_mapping_roundtrip() {
-    use protocol::*;
+    use exa_protocol::*;
     for place in [false, true] {
         let message = ClientMessage::EditBlock(BlockEdit {
             target: [15, 7, 16],
@@ -51,7 +51,7 @@ fn block_edits_and_item_mapping_roundtrip() {
 
 #[test]
 fn inventory_slot_commands_roundtrip() {
-    use protocol::*;
+    use exa_protocol::*;
     for command in [
         InventoryCommand::Select { slot: 8 },
         InventoryCommand::Move {
@@ -86,7 +86,7 @@ fn inventory_slot_commands_roundtrip() {
 
 #[test]
 fn container_commands_and_snapshot_roundtrip() {
-    use protocol::*;
+    use exa_protocol::*;
     for command in [
         ContainerCommand::Open {
             position: [26, 7, 30],

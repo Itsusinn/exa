@@ -156,22 +156,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f079e83a288787bcd14a6aea84cee5c87a67c5a3e660c30f557a3d24761b3527"
 
 [[package]]
-name = "client"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "game-client-core",
- "game-simulation",
- "protocol",
- "quinn",
- "rmp-serde",
- "rustls",
- "server",
- "tokio",
- "uuid",
-]
-
-[[package]]
 name = "cmake"
 version = "0.1.58"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -259,6 +243,79 @@ dependencies = [
 ]
 
 [[package]]
+name = "exa-client"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "exa-client-core",
+ "exa-protocol",
+ "exa-server",
+ "exa-simulation",
+ "quinn",
+ "rmp-serde",
+ "rustls",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "exa-client-core"
+version = "0.1.0"
+dependencies = [
+ "exa-protocol",
+ "exa-simulation",
+]
+
+[[package]]
+name = "exa-godot"
+version = "0.1.0"
+dependencies = [
+ "exa-client",
+ "exa-protocol",
+ "godot",
+]
+
+[[package]]
+name = "exa-protocol"
+version = "0.1.0"
+dependencies = [
+ "rmp-serde",
+ "serde",
+]
+
+[[package]]
+name = "exa-server"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "exa-protocol",
+ "exa-simulation",
+ "hecs",
+ "memmap2",
+ "quinn",
+ "rcgen",
+ "rkyv",
+ "rmp-serde",
+ "rustls",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-futures",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
+name = "exa-simulation"
+version = "0.1.0"
+dependencies = [
+ "exa-protocol",
+ "rapier3d",
+]
+
+[[package]]
 name = "fastbloom"
 version = "0.14.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -316,31 +373,6 @@ dependencies = [
  "futures-task",
  "pin-project-lite",
  "slab",
-]
-
-[[package]]
-name = "game-client-core"
-version = "0.1.0"
-dependencies = [
- "game-simulation",
- "protocol",
-]
-
-[[package]]
-name = "game-godot"
-version = "0.1.0"
-dependencies = [
- "client",
- "godot",
- "protocol",
-]
-
-[[package]]
-name = "game-simulation"
-version = "0.1.0"
-dependencies = [
- "protocol",
- "rapier3d",
 ]
 
 [[package]]
@@ -1025,14 +1057,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "protocol"
-version = "0.1.0"
-dependencies = [
- "rmp-serde",
- "serde",
-]
-
-[[package]]
 name = "ptr_meta"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1523,30 +1547,6 @@ dependencies = [
  "serde",
  "serde_core",
  "zmij",
-]
-
-[[package]]
-name = "server"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "game-simulation",
- "hecs",
- "memmap2",
- "protocol",
- "quinn",
- "rcgen",
- "rkyv",
- "rmp-serde",
- "rustls",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "tracing",
- "tracing-futures",
- "tracing-subscriber",
- "uuid",
 ]
 
 [[package]]

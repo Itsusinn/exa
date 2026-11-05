@@ -1,8 +1,8 @@
 //! Persistent equipment facts, committed alongside terrain, players and entities.
 use crate::archive_io::{self, MappedArchive};
 use anyhow::{Context, Result};
-use game_simulation::{equipment::occupied_cells, grid::Grid};
-use protocol::{EquipmentKind, EquipmentSnapshot, MaterialAmount, AIR, MAX_EQUIPMENT};
+use exa_protocol::{EquipmentKind, EquipmentSnapshot, MaterialAmount, AIR, MAX_EQUIPMENT};
+use exa_simulation::{equipment::occupied_cells, grid::Grid};
 use rkyv::{rancor::Error, Archive, Deserialize, Serialize};
 use std::{collections::BTreeMap, path::Path};
 
@@ -76,24 +76,24 @@ pub struct ThermalData {
     pub target_temperature_k: f64,
 }
 impl ThermalData {
-    fn capture(t: &protocol::ThermalSettings) -> Self {
+    fn capture(t: &exa_protocol::ThermalSettings) -> Self {
         Self {
             mode: match t.mode {
-                protocol::HeatControlMode::Off => "off",
-                protocol::HeatControlMode::Manual => "manual",
-                protocol::HeatControlMode::OutletTemperature => "outlet_temperature",
+                exa_protocol::HeatControlMode::Off => "off",
+                exa_protocol::HeatControlMode::Manual => "manual",
+                exa_protocol::HeatControlMode::OutletTemperature => "outlet_temperature",
             }
             .into(),
             duty_fraction: t.duty_fraction,
             target_temperature_k: t.target_temperature_k,
         }
     }
-    fn restore(&self) -> Result<protocol::ThermalSettings> {
-        Ok(protocol::ThermalSettings {
+    fn restore(&self) -> Result<exa_protocol::ThermalSettings> {
+        Ok(exa_protocol::ThermalSettings {
             mode: match self.mode.as_str() {
-                "off" => protocol::HeatControlMode::Off,
-                "manual" => protocol::HeatControlMode::Manual,
-                "outlet_temperature" => protocol::HeatControlMode::OutletTemperature,
+                "off" => exa_protocol::HeatControlMode::Off,
+                "manual" => exa_protocol::HeatControlMode::Manual,
+                "outlet_temperature" => exa_protocol::HeatControlMode::OutletTemperature,
                 _ => anyhow::bail!("unknown heat control mode"),
             },
             duty_fraction: self.duty_fraction,
@@ -187,7 +187,7 @@ impl EquipmentData {
             column_design: self
                 .column_design
                 .as_ref()
-                .map(|bytes| -> Result<protocol::ColumnDesign> {
+                .map(|bytes| -> Result<exa_protocol::ColumnDesign> {
                     anyhow::ensure!(bytes.len() <= 1024, "oversized column design");
                     Ok(rmp_serde::from_slice(bytes)?)
                 })
@@ -195,7 +195,7 @@ impl EquipmentData {
             pipe_ends: self.pipe_ends,
             tank_size: self
                 .tank_size
-                .map(|[diameter, height]| protocol::TankSize { diameter, height }),
+                .map(|[diameter, height]| exa_protocol::TankSize { diameter, height }),
         };
         anyhow::ensure!(value.valid(), "invalid equipment facts");
         Ok(value)
@@ -282,7 +282,7 @@ impl IndustryArchive {
                         && cells
                             .get(&cell)
                             .is_none_or(|ids| ids.iter().all(|id| records.get(id).is_some_and(
-                                |old| game_simulation::equipment::rack_compatible(old, &equipment)
+                                |old| exa_simulation::equipment::rack_compatible(old, &equipment)
                             ))),
                     "equipment overlaps terrain, unknown space or another device"
                 );

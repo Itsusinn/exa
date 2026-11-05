@@ -1,6 +1,6 @@
 //! Deterministic, coordinate-based climate, landforms, strata and vegetation.
 //! No global RNG, cached world state or generation-order-dependent writes.
-use protocol::*;
+use exa_protocol::*;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]

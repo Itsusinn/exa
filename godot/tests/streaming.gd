@@ -15,16 +15,16 @@ func settle(until: Callable) -> bool:
 		await create_timer(0.02).timeout
 	return false
 func run() -> void:
-	var path := OS.get_environment("CDDA_SAVE_PATH")
+	var path := preload("res://src/app_config.gd").environment("SAVE_PATH")
 	if not path.contains("target") or not FileAccess.file_exists(path):
-		push_error("Set CDDA_SAVE_PATH to an isolated target/streaming-quic fixture")
+		push_error("Set EXA_SAVE_PATH to an isolated target/streaming-quic fixture")
 		quit(1)
 		return
 	var identity := path.get_basename() + ".streaming.uuid"
 	var file := FileAccess.open(identity,FileAccess.WRITE)
 	file.store_string("5b5b5b5b-5b5b-5b5b-5b5b-5b5b5b5b5b5b")
 	file.close()
-	OS.set_environment("CDDA_IDENTITY_PATH",identity)
+	OS.set_environment("EXA_IDENTITY_PATH",identity)
 	scene = load("res://scenes/main.tscn").instantiate()
 	root.add_child(scene)
 	current_scene = scene

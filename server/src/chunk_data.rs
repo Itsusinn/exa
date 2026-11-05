@@ -5,11 +5,11 @@ use crate::{
     player_data::ItemStack,
 };
 use anyhow::{Context, Result};
-use game_simulation::grid::Grid;
-use protocol::{
+use exa_protocol::{
     ContainerSnapshot, GroundItem3d, InventoryEntry, CHEST, CHUNK_EDGE, CONTAINER_SLOTS,
     CONTAINER_STACK_LIMIT, WORLD_SIZE,
 };
+use exa_simulation::grid::Grid;
 use rkyv::{rancor::Error, Archive, Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, HashSet},
@@ -19,7 +19,7 @@ use std::{
 pub const DATA_VERSION: u32 = 3;
 const MAGIC: &[u8; 8] = b"DNGCHK01";
 const BLOCKS: usize = 4096;
-const IDS: [&str; 24] = protocol::BLOCK_IDS;
+const IDS: [&str; 24] = exa_protocol::BLOCK_IDS;
 
 #[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct BlockStates {
@@ -184,7 +184,7 @@ impl ChunkArchive {
         let mut chunks = Vec::new();
         for [x, z] in terrain.columns() {
             let mut sections = Vec::new();
-            for y in 0..protocol::WORLD_HEIGHT / CHUNK_EDGE {
+            for y in 0..exa_protocol::WORLD_HEIGHT / CHUNK_EDGE {
                 sections.push(Section {
                     y,
                     block_states: BlockStates::capture(&terrain.chunk([x * 16, y * 16, z * 16]))?,
@@ -241,7 +241,7 @@ impl ChunkArchive {
         chunks.sort_by_key(|c| (c.z_pos, c.x_pos));
         let value = Self {
             data_version: DATA_VERSION,
-            size: [0, protocol::WORLD_HEIGHT, 0],
+            size: [0, exa_protocol::WORLD_HEIGHT, 0],
             seed,
             generation,
             last_update: tick,
@@ -260,7 +260,7 @@ impl ChunkArchive {
                     } else if self.data_version == 2 {
                         [0, 32, 0]
                     } else {
-                        [0, protocol::WORLD_HEIGHT, 0]
+                        [0, exa_protocol::WORLD_HEIGHT, 0]
                     }
                 && self.last_update <= i64::MAX as u64,
             "unsupported chunk archive metadata"
@@ -286,7 +286,7 @@ impl ChunkArchive {
                 "invalid chunk metadata"
             );
             anyhow::ensure!(
-                protocol::valid_column([chunk.x_pos, chunk.z_pos])
+                exa_protocol::valid_column([chunk.x_pos, chunk.z_pos])
                     && (self.data_version != 1
                         || ((0..nx).contains(&chunk.x_pos) && (0..nz).contains(&chunk.z_pos)))
                     && columns.insert((chunk.x_pos, chunk.z_pos)),
@@ -321,10 +321,10 @@ impl ChunkArchive {
             }
             // Only validated legacy archives gain air above their original ceiling.
             // Missing sections in a current archive must still fail validation.
-            for y in (self.size[1]..protocol::WORLD_HEIGHT).step_by(16) {
+            for y in (self.size[1]..exa_protocol::WORLD_HEIGHT).step_by(16) {
                 terrain.apply_chunk(
                     [chunk.x_pos * 16, y, chunk.z_pos * 16],
-                    &vec![protocol::AIR; BLOCKS],
+                    &vec![exa_protocol::AIR; BLOCKS],
                 );
             }
         }
@@ -384,7 +384,7 @@ impl ChunkArchive {
                     ids.insert(item.id)
                         && !item.item.is_empty()
                         && item.item.len() <= 128
-                        && protocol::valid_position(item.position)
+                        && exa_protocol::valid_position(item.position)
                         && (item.position[0] / 16.0).floor() as i32 == chunk.x_pos
                         && (item.position[2] / 16.0).floor() as i32 == chunk.z_pos,
                     "invalid ground item entity"

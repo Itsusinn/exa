@@ -64,7 +64,7 @@ fn execute() -> Result {
         .parent()
         .ok_or("Godot executable has no parent directory")?
         .join("GodotSharp/Tools/nupkgs");
-    let csproj = project.join("Dungeon.Editor.csproj");
+    let csproj = project.join("exa.Editor.csproj");
     let mut restore = Command::new(&dotnet);
     support::hidden(&mut restore)
         .current_dir(&repo)

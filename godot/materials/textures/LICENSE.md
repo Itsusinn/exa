@@ -19,5 +19,5 @@ No preview renders, website branding or example scenes are included.
 definition (FastNoiseLite seed 731), not a downloaded Poly Haven asset.
 It generates a seamless 512px normal map for sand/clay, snow and ice.
 
-`../frontier_background.png` is a screenshot rendered by this project's own
+`../exa_background.png` is a screenshot rendered by this project's own
 Godot scene using these materials, captured without HUD via `tests/visuals.gd`.

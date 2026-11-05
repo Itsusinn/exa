@@ -11,6 +11,7 @@ func _initialize() -> void:
 	call_deferred("run")
 
 func run() -> void:
+	check_configuration_compatibility()
 	var scene = load("res://scenes/main.tscn").instantiate()
 	root.add_child(scene)
 	current_scene = scene
@@ -114,9 +115,9 @@ func run() -> void:
 	var pending_count: int = scene.terrain_pending.size()
 	for i in range(pending_count + 1): scene._process(0.0)
 	check(scene.terrain_pending.is_empty(),"terrain queue drains without a new map revision")
-	var previous_save := OS.get_environment("CDDA_SAVE_PATH")
+	var previous_save := preload("res://src/app_config.gd").environment("SAVE_PATH")
 	var isolated_save := ProjectSettings.globalize_path("res://../target/godot-ui-%d/world3d.bin" % Time.get_ticks_usec())
-	OS.set_environment("CDDA_SAVE_PATH", isolated_save)
+	OS.set_environment("EXA_SAVE_PATH", isolated_save)
 	scene.bridge.set_identity_path(isolated_save + ".client.uuid")
 	scene._singleplayer()
 	for i in range(300):
@@ -138,8 +139,35 @@ func run() -> void:
 	scene._connect_game("invalid address", "Test", "missing.der")
 	scene._process(0.0)
 	check(scene.hud.menu.page == "home" and not scene.entering_game and not scene.hud.menu.feedback.text.is_empty(), "connection failure returns to menu with diagnostic")
-	OS.set_environment("CDDA_SAVE_PATH", previous_save)
+	OS.set_environment("EXA_SAVE_PATH", previous_save)
 	scene.queue_free()
 	await process_frame
 	print("GODOT_SMOKE_RESULT=", "FAIL" if failed else "PASS")
 	quit(1 if failed else 0)
+
+func check_configuration_compatibility() -> void:
+	var config = preload("res://src/app_config.gd")
+	check(ProjectSettings.get_setting("application/config/name") == "exa", "project uses the exa name")
+	var folder := ProjectSettings.globalize_path("res://../target/rename-config-%d" % Time.get_ticks_usec())
+	var current := folder.path_join("exa")
+	var legacy := folder.path_join("Dungeon 3D")
+	DirAccess.make_dir_recursive_absolute(current)
+	DirAccess.make_dir_recursive_absolute(legacy)
+	for filename in ["settings.cfg", "column-design.json"]:
+		check(config.user_file(filename,current) == current.path_join(filename), "new installations use the exa user directory")
+		var old_file := FileAccess.open(legacy.path_join(filename),FileAccess.WRITE)
+		old_file.store_string("legacy bytes")
+		old_file.close()
+		check(config.user_file(filename,current) == legacy.path_join(filename), "existing settings and designs retain their original paths")
+		var new_file := FileAccess.open(current.path_join(filename),FileAccess.WRITE)
+		new_file.store_string("exa bytes")
+		new_file.close()
+		check(config.user_file(filename,current) == current.path_join(filename), "existing exa data takes precedence")
+		check(FileAccess.get_file_as_string(legacy.path_join(filename)) == "legacy bytes", "legacy user files are preserved")
+	var suffix := "RENAME_TEST_%d" % Time.get_ticks_usec()
+	OS.set_environment("CDDA_"+suffix,"old")
+	check(config.environment(suffix) == "old", "legacy CDDA environment remains supported")
+	OS.set_environment("EXA_"+suffix,"new")
+	check(config.environment(suffix) == "new", "EXA environment overrides CDDA")
+	OS.unset_environment("EXA_"+suffix)
+	OS.unset_environment("CDDA_"+suffix)

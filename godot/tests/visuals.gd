@@ -15,7 +15,7 @@ func snapshot(file: String) -> void:
 		quit(1)
 
 func run() -> void:
-	output = OS.get_environment("CDDA_VISUAL_PATH")
+	output = preload("res://src/app_config.gd").environment("VISUAL_PATH")
 	if output.is_empty(): output = ProjectSettings.globalize_path("res://../target/visual-review")
 	DirAccess.make_dir_recursive_absolute(output)
 	scene = load("res://scenes/main.tscn").instantiate()

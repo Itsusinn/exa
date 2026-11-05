@@ -1,4 +1,4 @@
-name: Build and release Windows game
+name: Build and release exa for Windows
 run-name: Release ${{ inputs.tag }} from ${{ github.ref_name }}
 
 on:
@@ -123,7 +123,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Godot multiplayer checks failed.' }
 
       - name: Build standalone release server
-        run: cargo +stable build --locked --release -p server --jobs 2
+        run: cargo +stable build --locked --release -p exa-server --jobs 2
 
       - name: Export release client with its native extension
         run: just export-release
@@ -137,18 +137,18 @@ jobs:
           $output = Join-Path $env:GITHUB_WORKSPACE 'target/export-release'
           $evidence = Join-Path $env:GITHUB_WORKSPACE 'target/release-checks'
           New-Item -ItemType Directory -Force $evidence | Out-Null
-          foreach ($file in @('Dungeon.exe', 'Dungeon.pck', 'game_godot.dll')) {
+          foreach ($file in @('exa.exe', 'exa.pck', 'exa_godot.dll')) {
             if (!(Test-Path -LiteralPath "$output/$file" -PathType Leaf)) { throw "Missing runtime file: $file" }
           }
-          $exportedHash = (Get-FileHash "$output/game_godot.dll").Hash
-          if ($exportedHash -ne (Get-FileHash 'target/release/game_godot.dll').Hash) {
+          $exportedHash = (Get-FileHash "$output/exa_godot.dll").Hash
+          if ($exportedHash -ne (Get-FileHash 'target/release/exa_godot.dll').Hash) {
             throw 'Exported DLL does not match the release build.'
           }
-          $env:CDDA_IDENTITY_PATH = "$evidence/release-client.uuid"
+          $env:EXA_IDENTITY_PATH = "$evidence/release-client.uuid"
           function Test-Export([string]$scenario, [string[]]$gameArgs) {
             # Standard release templates forbid --path/--script overrides. Use the shipped entry point.
             $arguments = @('--headless', '--max-fps', '60', '--quit-after', '600', '--') + $gameArgs
-            $process = Start-Process -FilePath "$output/Dungeon.exe" -WorkingDirectory $output -WindowStyle Hidden -PassThru -ArgumentList $arguments -RedirectStandardOutput "$evidence/$scenario.out.log" -RedirectStandardError "$evidence/$scenario.err.log"
+            $process = Start-Process -FilePath "$output/exa.exe" -WorkingDirectory $output -WindowStyle Hidden -PassThru -ArgumentList $arguments -RedirectStandardOutput "$evidence/$scenario.out.log" -RedirectStandardError "$evidence/$scenario.err.log"
             if (!$process.WaitForExit(60000)) {
               $process.Kill()
               $process.WaitForExit()
@@ -160,18 +160,18 @@ jobs:
             Write-Output $stdout
             Write-Output $stderr
             if ($process.ExitCode -ne 0 -or $stdout -notmatch 'Initialize godot-rust' -or "$stdout`n$stderr" -match '(?m)^(SCRIPT ERROR:|ERROR:)') {
-              throw "Exported $scenario test failed."
+              throw "Exported $scenario test failed (exit code: $($process.ExitCode)). See the uploaded stdout/stderr logs."
             }
           }
           Test-Export 'demo' @('--demo')
-          $env:CDDA_BIND = '127.0.0.1:19876'
-          $env:CDDA_TEST_ADDRESS = $env:CDDA_BIND
-          $env:CDDA_SAVE_PATH = "$evidence/world3d.bin"
-          $env:CDDA_CERT_PATH = "$evidence/server.cert.der"
-          $env:CDDA_RUN_SECONDS = '240'
-          $env:CDDA_SHUTDOWN_ON_STDIN_CLOSE = '1'
-          $env:RUST_LOG = 'server=info'
-          $startInfo = [System.Diagnostics.ProcessStartInfo]::new("$env:GITHUB_WORKSPACE/target/release/server.exe")
+          $env:EXA_BIND = '127.0.0.1:19876'
+          $env:EXA_TEST_ADDRESS = $env:EXA_BIND
+          $env:EXA_SAVE_PATH = "$evidence/world3d.bin"
+          $env:EXA_CERT_PATH = "$evidence/server.cert.der"
+          $env:EXA_RUN_SECONDS = '240'
+          $env:EXA_SHUTDOWN_ON_STDIN_CLOSE = '1'
+          $env:RUST_LOG = 'exa_server=info'
+          $startInfo = [System.Diagnostics.ProcessStartInfo]::new("$env:GITHUB_WORKSPACE/target/release/exa-server.exe")
           $startInfo.WorkingDirectory = $evidence
           $startInfo.UseShellExecute = $false
           $startInfo.CreateNoWindow = $true
@@ -183,15 +183,15 @@ jobs:
           $serverErr = $server.StandardError.ReadToEndAsync()
           try {
             $deadline = (Get-Date).AddSeconds(30)
-            while (!(Test-Path -LiteralPath $env:CDDA_CERT_PATH)) {
+            while (!(Test-Path -LiteralPath $env:EXA_CERT_PATH)) {
               if ($server.HasExited -or (Get-Date) -gt $deadline) { throw 'Release server did not become ready.' }
               Start-Sleep -Milliseconds 100
             }
-            Test-Export 'multiplayer' @('--connect', '--server', $env:CDDA_TEST_ADDRESS, '--name', 'ReleaseCheck', '--cert', "`"$env:CDDA_CERT_PATH`"")
+            Test-Export 'multiplayer' @('--connect', '--server', $env:EXA_TEST_ADDRESS, '--name', 'ReleaseCheck', '--cert', "`"$env:EXA_CERT_PATH`"")
             $server.StandardInput.Close()
             if (!$server.WaitForExit(30000)) { throw 'Release server did not shut down.' }
             $server.WaitForExit()
-            if ($server.ExitCode -ne 0 -or !(Test-Path -LiteralPath $env:CDDA_SAVE_PATH)) {
+            if ($server.ExitCode -ne 0 -or !(Test-Path -LiteralPath $env:EXA_SAVE_PATH)) {
               throw 'Release server failed to save and exit.'
             }
             if ($serverOut.Result -notmatch 'Player logged in' -or $serverOut.Result -notmatch 'ReleaseCheck') {
@@ -205,10 +205,10 @@ jobs:
 
       - name: Package client, server and checksums
         run: |
-          $stage = Join-Path $env:RUNNER_TEMP "Dungeon-$env:RELEASE_TAG-windows-x86_64"
+          $stage = Join-Path $env:RUNNER_TEMP "exa-$env:RELEASE_TAG-windows-x86_64"
           New-Item -ItemType Directory -Force $stage, 'target/release-assets' | Out-Null
           # Explicit file list prevents bundling saves, certificates, logs or editor tools.
-          Copy-Item 'target/export-release/Dungeon.exe', 'target/export-release/Dungeon.pck', 'target/export-release/game_godot.dll', 'target/release/server.exe', 'README.md' -Destination $stage
+          Copy-Item 'target/export-release/exa.exe', 'target/export-release/exa.pck', 'target/export-release/exa_godot.dll', 'target/release/exa-server.exe', 'README.md' -Destination $stage
           New-Item -ItemType Directory "$stage/licenses" | Out-Null
           Copy-Item 'godot/materials/textures/LICENSE.md' "$stage/licenses/textures.md"
           Copy-Item 'godot/materials/textures/sources.json' "$stage/licenses/texture-sources.json"
@@ -220,12 +220,12 @@ jobs:
             "Rust: $(rustc +stable --version)"
             "Workflow: $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
             ''
-            'Extract the entire ZIP, then run Dungeon.exe. Single-player includes its own server.'
-            'For multiplayer hosting, run server.exe; see README.md for bind address and TLS certificate settings.'
+            'Extract the entire ZIP, then run exa.exe. Single-player includes its own server.'
+            'For multiplayer hosting, run exa-server.exe; see README.md for bind address and TLS certificate settings.'
             'Automated headless checks do not verify GPU rendering or manual keyboard/window behavior.'
             'Godot engine license and third-party notices: https://godotengine.org/license/'
           ) | Set-Content "$stage/BUILD-INFO.txt" -Encoding utf8
-          $zip = "target/release-assets/Dungeon-$env:RELEASE_TAG-windows-x86_64.zip"
+          $zip = "target/release-assets/exa-$env:RELEASE_TAG-windows-x86_64.zip"
           Compress-Archive -Path $stage -DestinationPath $zip
           $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant()
           "$hash  $(Split-Path $zip -Leaf)" | Set-Content 'target/release-assets/SHA256SUMS.txt' -Encoding ascii
@@ -290,9 +290,9 @@ jobs:
           if [[ "$RELEASE_PRERELEASE" == true ]]; then flags+=(--prerelease); fi
           printf '%s\n' \
             'Windows x86_64 release client and standalone Rust server.' \
-            'Extract the entire ZIP and start Dungeon.exe; server.exe is optional for multiplayer hosting.' \
+            'Extract the entire ZIP and start exa.exe; exa-server.exe is optional for multiplayer hosting.' \
             "Built commit: $GITHUB_SHA" \
             'Includes SHA-256 checksums. Automated headless checks passed; GPU and manual input acceptance remain separate.' > "$RUNNER_TEMP/release-notes.md"
-          gh release create "$RELEASE_TAG" "Dungeon-$RELEASE_TAG-windows-x86_64.zip" SHA256SUMS.txt \
-            --verify-tag --title "Dungeon 3D $RELEASE_TAG" --generate-notes \
+          gh release create "$RELEASE_TAG" "exa-$RELEASE_TAG-windows-x86_64.zip" SHA256SUMS.txt \
+            --verify-tag --title "exa $RELEASE_TAG" --generate-notes \
             --notes-file "$RUNNER_TEMP/release-notes.md" "${flags[@]}"

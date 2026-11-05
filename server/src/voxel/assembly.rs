@@ -35,9 +35,8 @@ impl VoxelWorld {
         let result = (|| -> Result<()> {
             anyhow::ensure!(p.hp > 0 && p.open_container.is_none(), "当前无法检查设备。");
             anyhow::ensure!(self.tick >= p.assembly_after, "检查过快，请稍后重试。");
-            let hit =
-                game_simulation::equipment::target(&self.terrain, p.body.position, yaw, pitch)
-                    .context("设备太远或被遮挡。");
+            let hit = exa_simulation::equipment::target(&self.terrain, p.body.position, yaw, pitch)
+                .context("设备太远或被遮挡。");
             anyhow::ensure!(hit?.equipment == Some(id), "请瞄准要检查的设备。");
             let master = self.terrain.equipment.get(&id).context("设备已被拆除。");
             let master = master?;
@@ -152,7 +151,7 @@ mod tests {
         (w, rx)
     }
     fn check(w: &mut VoxelWorld, req: u64) {
-        let delta = [0.0f32, 1.5 - (1.0 + game_simulation::EYE_HEIGHT), 2.5];
+        let delta = [0.0f32, 1.5 - (1.0 + exa_simulation::EYE_HEIGHT), 2.5];
         w.check_assembly(1, req, 1, 0, std::f32::consts::PI, delta[1].atan2(delta[2]));
     }
     #[test]

@@ -1,11 +1,11 @@
 use crate::mesh::{Mesh, Vertex, NORMALS};
-use game_client_core::voxel::Client3d;
-pub use game_simulation::equipment::ports as equipment_ports;
-pub use game_simulation::equipment::tank_capacity_m3;
-pub use game_simulation::equipment::{
+use exa_client_core::voxel::Client3d;
+use exa_protocol::*;
+pub use exa_simulation::equipment::ports as equipment_ports;
+pub use exa_simulation::equipment::tank_capacity_m3;
+pub use exa_simulation::equipment::{
     collision_boxes as equipment_collision_boxes, tank_nozzle_length_m,
 };
-use protocol::*;
 
 /// Reusable local-space equipment mesh; instances carry their authoritative origin.
 pub fn equipment_shape(kind: EquipmentKind, axis: u8) -> Mesh {
@@ -75,8 +75,8 @@ pub fn equipment_shape_configured(
         thermal: None,
         reading: None,
     };
-    let nozzle_z = game_simulation::equipment::tank_nozzle_z_m(&template);
-    let neck = game_simulation::equipment::tank_nozzle_length_m(&template);
+    let nozzle_z = exa_simulation::equipment::tank_nozzle_z_m(&template);
+    let neck = exa_simulation::equipment::tank_nozzle_length_m(&template);
     match kind {
         EquipmentKind::Column | EquipmentKind::RefluxColumn => {
             let centre = diameter / 2.0;
@@ -148,7 +148,7 @@ pub fn equipment_shape_configured(
             }
         }
         EquipmentKind::Tee => {
-            for face in game_simulation::equipment::tee_faces(axis) {
+            for face in exa_simulation::equipment::tee_faces(axis) {
                 let along = usize::from(face / 2);
                 let mut origin = [0.5; 3];
                 if face % 2 == 0 {
@@ -334,7 +334,7 @@ pub fn equipment_shape_with_ends(kind: EquipmentKind, axis: u8, ends: Option<[u8
 
 fn equipment_nozzle(
     mesh: &mut Mesh,
-    port: game_simulation::equipment::EquipmentPort,
+    port: exa_simulation::equipment::EquipmentPort,
     length: f32,
     color: [f32; 3],
 ) {
@@ -677,7 +677,7 @@ pub fn actors(model: &Client3d) -> Mesh {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use game_simulation::grid::Grid;
+    use exa_simulation::grid::Grid;
 
     #[test]
     fn sized_tanks_match_shared_collision_and_keep_separate_meshes() {
@@ -703,7 +703,7 @@ mod tests {
                         reading: None,
                     };
                     let mesh = equipment_shape_sized(kind, 0, Some(size));
-                    let boxes = game_simulation::equipment::collision_boxes(&device);
+                    let boxes = exa_simulation::equipment::collision_boxes(&device);
                     assert!(!mesh.vertices.is_empty());
                     for vertex in &mesh.vertices {
                         assert!(
@@ -777,7 +777,7 @@ mod tests {
                     pipe_ends: None,
                     reading: None,
                 };
-                let boxes = game_simulation::equipment::collision_boxes(&device);
+                let boxes = exa_simulation::equipment::collision_boxes(&device);
                 let mesh = equipment_shape(kind, axis);
                 assert!(!mesh.vertices.is_empty());
                 for vertex in mesh.vertices {
@@ -825,7 +825,7 @@ mod tests {
                         };
                         let mesh = equipment_shape_configured(kind, 0, None, Some(&design));
                         assert!(!mesh.vertices.is_empty());
-                        let boxes = game_simulation::equipment::collision_boxes(&device);
+                        let boxes = exa_simulation::equipment::collision_boxes(&device);
                         for vertex in &mesh.vertices {
                             assert!(
                                 boxes.iter().any(|shape| (0..3)
@@ -875,7 +875,7 @@ mod tests {
                     reading: None,
                 };
                 let mesh = equipment_shape(kind, axis);
-                let boxes = game_simulation::equipment::collision_boxes(&d);
+                let boxes = exa_simulation::equipment::collision_boxes(&d);
                 assert!(!mesh.vertices.is_empty());
                 for v in &mesh.vertices {
                     assert!(
@@ -921,7 +921,7 @@ mod tests {
                     reading: None,
                 };
                 assert!(device.valid());
-                let boxes = game_simulation::equipment::collision_boxes(&device);
+                let boxes = exa_simulation::equipment::collision_boxes(&device);
                 let mesh = equipment_shape_with_ends(device.kind, device.axis, device.pipe_ends);
                 assert!(!mesh.vertices.is_empty());
                 for vertex in mesh.vertices {

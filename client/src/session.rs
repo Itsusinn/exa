@@ -1,9 +1,9 @@
 use crate::local_server::{LocalEvent, LocalServer};
 use crate::network_client::{NetworkEvent, QuicSession, Transport};
-use game_client_core::voxel::Client3d;
+use exa_client_core::voxel::Client3d;
 pub type Model = Client3d;
-use game_simulation::{equipment, grid::Grid, step_in_grid};
-use protocol::*;
+use exa_protocol::*;
+use exa_simulation::{equipment, grid::Grid, step_in_grid};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct PipePlanKey {
@@ -535,7 +535,7 @@ impl Session {
                     equipment::ports(device)
                         .get(usize::from(start.port))
                         .is_none_or(|port| {
-                            game_simulation::distance(port.position, self.model.body.position)
+                            exa_simulation::distance(port.position, self.model.body.position)
                                 > PIPE_START_RANGE
                         })
                 });
@@ -547,7 +547,7 @@ impl Session {
         if self.pipe_pending.is_some() {
             return;
         }
-        let target = game_simulation::pipe_route::resolve_anchor(
+        let target = exa_simulation::pipe_route::resolve_anchor(
             &self.model.terrain,
             self.model.body.position,
             yaw,
@@ -581,9 +581,9 @@ impl Session {
         self.pipe_plan_key = Some(key);
         self.pipe_plan_revision = self.pipe_plan_revision.wrapping_add(1);
         self.pipe_plan.clear();
-        match game_simulation::pipe_route::plan(&self.model.terrain, start, end).and_then(|cells| {
+        match exa_simulation::pipe_route::plan(&self.model.terrain, start, end).and_then(|cells| {
             let ends =
-                game_simulation::pipe_route::validate(&self.model.terrain, start, end, &cells)?;
+                exa_simulation::pipe_route::validate(&self.model.terrain, start, end, &cells)?;
             Ok(cells.into_iter().zip(ends).collect::<Vec<_>>())
         }) {
             Ok(plan) => {
@@ -670,7 +670,7 @@ impl Session {
         }
     }
     pub fn container_target(&self, yaw: f32, pitch: f32) -> Option<[i32; 3]> {
-        game_simulation::targeted_container(
+        exa_simulation::targeted_container(
             &self.model.terrain,
             self.model.body.position,
             yaw,
@@ -678,7 +678,7 @@ impl Session {
         )
     }
     pub fn block_target(&self, yaw: f32, pitch: f32) -> Option<[i32; 3]> {
-        game_simulation::targeting::target_block(
+        exa_simulation::targeting::target_block(
             &self.model.terrain,
             self.model.body.position,
             yaw,
@@ -749,7 +749,7 @@ impl Session {
                 return;
             }
         }
-        let Some(hit) = game_simulation::targeting::target_block(
+        let Some(hit) = exa_simulation::targeting::target_block(
             &self.model.terrain,
             self.model.body.position,
             yaw,
@@ -870,12 +870,12 @@ impl Session {
             let boxes = equipment::collision_boxes(&device);
             let overlaps = |p: [f32; 3]| {
                 boxes.iter().any(|b| {
-                    p[0] + game_simulation::RADIUS > b.min[0]
-                        && p[0] - game_simulation::RADIUS < b.max[0]
-                        && p[1] + game_simulation::HEIGHT > b.min[1]
+                    p[0] + exa_simulation::RADIUS > b.min[0]
+                        && p[0] - exa_simulation::RADIUS < b.max[0]
+                        && p[1] + exa_simulation::HEIGHT > b.min[1]
                         && p[1] < b.max[1]
-                        && p[2] + game_simulation::RADIUS > b.min[2]
-                        && p[2] - game_simulation::RADIUS < b.max[2]
+                        && p[2] + exa_simulation::RADIUS > b.min[2]
+                        && p[2] - exa_simulation::RADIUS < b.max[2]
                 })
             };
             if overlaps(self.model.body.position)

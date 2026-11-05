@@ -1,6 +1,6 @@
 //! A separate, single-slot design worker. Cancellation never releases the slot
 //! until the blocking calculation has actually returned.
-use protocol::{
+use exa_protocol::{
     DistillationCommand, DistillationReply, DistillationResult, DistillationStatus, ServerMessage,
 };
 use std::{

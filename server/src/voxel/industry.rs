@@ -1,6 +1,6 @@
 //! Authoritative equipment transactions and atomic publication of background fluid results.
 use super::*;
-use game_simulation::{
+use exa_simulation::{
     equipment::{collision_boxes, occupied_cells, placement_origin_configured, target},
     inventory::insert,
     HEIGHT, RADIUS,
@@ -15,14 +15,14 @@ impl VoxelWorld {
             (PIPE_ITEM, 16),
             (PUMP_ITEM, 2),
             (VALVE_ITEM, 4),
-            (protocol::VESSEL_ITEM, 4),
-            (protocol::HEAT_EXCHANGER_ITEM, 1),
-            (protocol::PIPE_RACK_ITEM, 8),
-            (protocol::COLUMN_ITEM, 1),
-            (protocol::REFLUX_COLUMN_ITEM, 1),
-            (protocol::CONDENSER_ITEM, 1),
-            (protocol::REBOILER_ITEM, 1),
-            (protocol::TEE_ITEM, 2),
+            (exa_protocol::VESSEL_ITEM, 4),
+            (exa_protocol::HEAT_EXCHANGER_ITEM, 1),
+            (exa_protocol::PIPE_RACK_ITEM, 8),
+            (exa_protocol::COLUMN_ITEM, 1),
+            (exa_protocol::REFLUX_COLUMN_ITEM, 1),
+            (exa_protocol::CONDENSER_ITEM, 1),
+            (exa_protocol::REBOILER_ITEM, 1),
+            (exa_protocol::TEE_ITEM, 2),
         ] {
             anyhow::ensure!(
                 insert(
@@ -156,7 +156,7 @@ impl VoxelWorld {
                     tank_size,
                     column_design,
                     thermal: (kind == EquipmentKind::HeatExchanger)
-                        .then(protocol::ThermalSettings::default),
+                        .then(exa_protocol::ThermalSettings::default),
                     reading: None,
                 };
                 anyhow::ensure!(equipment.valid(), "设备方向或位置无效。");
@@ -311,7 +311,7 @@ impl VoxelWorld {
         expected: u64,
         yaw: f32,
         pitch: f32,
-        settings: protocol::ThermalSettings,
+        settings: exa_protocol::ThermalSettings,
     ) -> Result<()> {
         let p = self.players.get(&player).context("玩家尚未连接。")?;
         anyhow::ensure!(
@@ -617,7 +617,7 @@ impl VoxelWorld {
     pub(super) fn equipment_conflicts(&self, proposed: &EquipmentSnapshot) -> bool {
         let cells = occupied_cells(proposed);
         self.terrain.equipment.values().any(|old| {
-            !game_simulation::equipment::rack_compatible(old, proposed)
+            !exa_simulation::equipment::rack_compatible(old, proposed)
                 && occupied_cells(old).iter().any(|cell| cells.contains(cell))
         })
     }
@@ -759,7 +759,7 @@ mod tests {
         let p = w.players[&1].body.position;
         let d = [
             point[0] - p[0],
-            point[1] - p[1] - game_simulation::EYE_HEIGHT,
+            point[1] - p[1] - exa_simulation::EYE_HEIGHT,
             point[2] - p[2],
         ];
         (
@@ -802,14 +802,14 @@ mod tests {
             inventory_revision: bag.revision,
             slot: 0,
         };
-        let size = protocol::TankSize {
+        let size = exa_protocol::TankSize {
             diameter: 6,
             height: 12,
         };
         assert!(w
             .apply_equipment_command(
                 1,
-                command(protocol::TankSize {
+                command(exa_protocol::TankSize {
                     diameter: 7,
                     height: 12
                 })
@@ -836,7 +836,7 @@ mod tests {
         w.save(&path).unwrap();
         assert_eq!(VoxelWorld::load(&path).unwrap().terrain.equipment, before);
         let (revision, mut ds) = w.industry_input().unwrap();
-        ds[0].tank_size = Some(protocol::TankSize {
+        ds[0].tank_size = Some(exa_protocol::TankSize {
             diameter: 5,
             height: 12,
         });
@@ -998,12 +998,12 @@ mod tests {
         assert_eq!(restored.terrain.equipment, expected);
         assert_eq!(restored.industry_ledger, ledger);
         assert_eq!(
-            game_simulation::equipment::ports(&restored.terrain.equipment[&90]).len(),
+            exa_simulation::equipment::ports(&restored.terrain.equipment[&90]).len(),
             3
         );
         assert_eq!(
             crate::assembly::inspect(&restored.terrain.equipment, 1, 1).status,
-            protocol::AssemblyStatus::Complete
+            exa_protocol::AssemblyStatus::Complete
         );
         let manifest: Save = rmp_serde::from_slice(&before[8..]).unwrap();
         assert_eq!(manifest.version, 13);
@@ -1156,7 +1156,7 @@ mod tests {
         w.industry_ledger.hydro_injected_moles = [1000.0, 1000.0];
         w.industry_ledger.hydro_injected_energy_j = energy;
         w.industry_ledger.heat_added_j = 123.0;
-        w.terrain.equipment.get_mut(&1).unwrap().tank_size = Some(protocol::TankSize {
+        w.terrain.equipment.get_mut(&1).unwrap().tank_size = Some(exa_protocol::TankSize {
             diameter: 3,
             height: 5,
         });

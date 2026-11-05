@@ -1,6 +1,6 @@
 //! Two-click pipe construction. Validate the complete proposal before changing any fact.
 use super::*;
-use game_simulation::{
+use exa_simulation::{
     equipment::{collision_boxes, connected, ports},
     pipe_route, HEIGHT, RADIUS,
 };
@@ -212,7 +212,7 @@ impl VoxelWorld {
     fn pipe_anchor_port(
         &self,
         anchor: PipeAnchor,
-    ) -> Result<game_simulation::equipment::EquipmentPort> {
+    ) -> Result<exa_simulation::equipment::EquipmentPort> {
         let d = self
             .terrain
             .equipment
@@ -341,7 +341,7 @@ mod tests {
         let p = w.players[&1].body.position;
         let d = [
             point[0] - p[0],
-            point[1] - p[1] - game_simulation::EYE_HEIGHT,
+            point[1] - p[1] - exa_simulation::EYE_HEIGHT,
             point[2] - p[2],
         ];
         (
@@ -555,7 +555,7 @@ mod tests {
             w.players[&1].pipe_reply.as_ref().unwrap().stage,
             PipeRouteStage::Laid
         );
-        assert!(game_simulation::equipment::rack_compatible(
+        assert!(exa_simulation::equipment::rack_compatible(
             &w.terrain.equipment[&3],
             &w.terrain.equipment[&4]
         ));

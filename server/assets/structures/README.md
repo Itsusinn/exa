@@ -4,10 +4,10 @@
 
 ## 添加结构
 
-1. 在 `templates.json` 添加命名模板。`fills` 按列表顺序覆盖，`from` / `to` 是包含端点的本地 `[x,y,z]`；`block` 使用 `protocol::BLOCK_IDS` 中的稳定名称。显式 `game:air` 用于门窗与内部空间；未被填充指令覆盖的位置保持整地后的状态。
+1. 在 `templates.json` 添加命名模板。`fills` 按列表顺序覆盖，`from` / `to` 是包含端点的本地 `[x,y,z]`；`block` 使用 `exa_protocol::BLOCK_IDS` 中的稳定名称。显式 `game:air` 用于门窗与内部空间；未被填充指令覆盖的位置保持整地后的状态。
 2. 在 `definitions.json` 的 `structures` 中添加唯一 `id`，设置非零 `weight`、`biomes`、`max_slope`、`max_distance_from_center` 和 `pieces`。
 3. 每个 piece 的 `offset` 是相对中心的 `[x,z]`，`rotation` 为 0–3 次 90° 旋转，变换为 `[x,z] -> [-z,x]`。模板池中的各项包含 `template` 引用和非零 `weight`。所有 piece 共享结构地坪，模板 y=0 对应地坪表面；结构整体还会按种子旋转。
-4. 执行 `cargo test -p server --jobs 2 voxel::terrain::structures`、`just check`、`just test` 和 `just godot-structures`，检查入口、跨区块拼接、种子分布、保存与截图。新增结构时同步调整测试的类型覆盖，不删除已有回归。
+4. 执行 `cargo test -p exa-server --jobs 2 voxel::terrain::structures`、`just check`、`just test` 和 `just godot-structures`，检查入口、跨区块拼接、种子分布、保存与截图。新增结构时同步调整测试的类型覆盖，不删除已有回归。
 
 ## 参数与限制
 

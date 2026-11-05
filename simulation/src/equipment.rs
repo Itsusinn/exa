@@ -1,6 +1,8 @@
 //! Shared device geometry, occupancy and ray selection for authority and prediction.
 use crate::{grid::Grid, EYE_HEIGHT};
-use protocol::{ColumnDesign, EquipmentKind, EquipmentSnapshot, TankSize, AIR, BLOCK_REACH, WATER};
+use exa_protocol::{
+    ColumnDesign, EquipmentKind, EquipmentSnapshot, TankSize, AIR, BLOCK_REACH, WATER,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CollisionBox {
@@ -492,7 +494,7 @@ pub fn target(map: &Grid, feet: [f32; 3], yaw: f32, pitch: f32) -> Option<WorldH
         pitch.sin(),
         -yaw.cos() * pitch.cos(),
     ];
-    if !protocol::valid_voxel(eye.map(|v| v.floor() as i32)) {
+    if !exa_protocol::valid_voxel(eye.map(|v| v.floor() as i32)) {
         return None;
     }
     let mut closest = None;
@@ -571,7 +573,7 @@ pub fn target(map: &Grid, feet: [f32; 3], yaw: f32, pitch: f32) -> Option<WorldH
 mod tests {
     use super::*;
     use crate::{overlaps_grid, step_player_in_grid};
-    use protocol::{Body, PlayerInput, STONE};
+    use exa_protocol::{Body, PlayerInput, STONE};
     fn device(kind: EquipmentKind, origin: [i32; 3], axis: u8) -> EquipmentSnapshot {
         EquipmentSnapshot {
             id: 1,
@@ -658,7 +660,7 @@ mod tests {
                             boxes.iter().any(|b| b.contains(inside)),
                             "{kind:?} {axis} {p:?}"
                         );
-                        let anchor = protocol::PipeAnchor {
+                        let anchor = exa_protocol::PipeAnchor {
                             id: d.id,
                             revision: d.revision,
                             port: p.id,
@@ -671,7 +673,7 @@ mod tests {
                     }
                     assert!(crate::pipe_route::anchor_cell(
                         &grid,
-                        protocol::PipeAnchor {
+                        exa_protocol::PipeAnchor {
                             id: d.id,
                             revision: d.revision,
                             port: ps.len() as u8

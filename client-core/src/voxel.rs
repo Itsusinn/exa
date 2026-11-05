@@ -1,5 +1,5 @@
-use game_simulation::{grid::Grid, step_player_in_grid};
-use protocol::*;
+use exa_protocol::*;
+use exa_simulation::{grid::Grid, step_player_in_grid};
 use std::collections::{BTreeSet, VecDeque};
 
 pub struct Client3d {
@@ -68,7 +68,7 @@ impl Client3d {
             for y in [-CHUNK_EDGE, 0, CHUNK_EDGE] {
                 for z in [-CHUNK_EDGE, 0, CHUNK_EDGE] {
                     let adjacent = [origin[0] + x, origin[1] + y, origin[2] + z];
-                    if protocol::valid_voxel(adjacent) {
+                    if exa_protocol::valid_voxel(adjacent) {
                         self.dirty_chunks.insert(adjacent);
                     }
                 }
@@ -85,7 +85,7 @@ impl Client3d {
                 let blocks = &self.terrain.blocks;
                 let before = self.terrain.equipment.len();
                 self.terrain.equipment.retain(|_, device| {
-                    game_simulation::equipment::occupied_cells(device)
+                    exa_simulation::equipment::occupied_cells(device)
                         .iter()
                         .any(|p| blocks.contains_key(&Grid::origin(*p)))
                 });

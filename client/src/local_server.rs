@@ -1,6 +1,6 @@
 //! An owned loopback authority. All disk/network work stays off the host thread.
 use anyhow::{Context, Result};
-use server::{network, voxel::VoxelWorld};
+use exa_server::{network, voxel::VoxelWorld};
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 use tokio::sync::{mpsc, oneshot, Mutex};
 
@@ -20,7 +20,7 @@ impl LocalServer {
         let (tx, events) = mpsc::channel(2);
         let (shutdown, rx) = oneshot::channel();
         std::thread::Builder::new()
-            .name("game-local-server".into())
+            .name("exa-local-server".into())
             .spawn(move || {
                 let result = (|| {
                     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -70,7 +70,7 @@ async fn run(
         std::fs::create_dir_all(parent)?;
     }
     // Held until save completes; a second local client must not overwrite this world.
-    let _lock = server::voxel::lock_world(&path)?;
+    let _lock = exa_server::voxel::lock_world(&path)?;
     VoxelWorld::validate_generation()?;
     let mut world = if path.exists() {
         VoxelWorld::load(&path)?

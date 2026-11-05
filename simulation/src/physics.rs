@@ -1,7 +1,7 @@
 //! Rapier queries are rebuilt from the current local snapshot for each fixed step.
 //! No hidden physics state survives a rewind, terrain edit, or session change.
 use crate::{DT, HEIGHT, RADIUS};
-use protocol::Body;
+use exa_protocol::Body;
 use rapier3d::{
     control::{CharacterLength, KinematicCharacterController},
     parry::{
@@ -162,7 +162,7 @@ pub(super) fn move_character(
 mod tests {
     use super::*;
     use crate::{grid::Grid, overlaps, step, step_with_actors, SPEED};
-    use protocol::{PlayerInput, AIR, STONE};
+    use exa_protocol::{PlayerInput, AIR, STONE};
 
     fn body(position: [f32; 3]) -> Body {
         Body {

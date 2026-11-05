@@ -129,7 +129,7 @@ fn execute() -> Result {
             let output = support::capture(cargo(&repo).args([
                 "test",
                 "-p",
-                "client",
+                "exa-client",
                 "--test",
                 "multiplayer",
                 "--jobs",
@@ -148,7 +148,7 @@ fn execute() -> Result {
             run(godot
                 .command(&project)?
                 .args(["--script", "res://tests/streaming.gd"])
-                .env("CDDA_SAVE_PATH", save))
+                .env("EXA_SAVE_PATH", save))
         }
         action => {
             let (test, headless, fixture) = match action {
@@ -158,7 +158,7 @@ fn execute() -> Result {
                     "industry_flow",
                     action == "industry-flow",
                     Some((
-                        "client",
+                        "exa-client",
                         "industrial_flow_controls_conserve_and_emit_graphics_fixture",
                     )),
                 ),
@@ -166,7 +166,7 @@ fn execute() -> Result {
                     "industry_thermal",
                     action == "industry-thermal",
                     Some((
-                        "client",
+                        "exa-client",
                         "industrial_thermal_controls_sync_and_emit_graphics_fixture",
                     )),
                 ),
@@ -174,7 +174,7 @@ fn execute() -> Result {
                     "industry_route",
                     action == "industry-route",
                     Some((
-                        "client",
+                        "exa-client",
                         "industrial_pipe_routes_are_atomic_and_emit_graphics_fixture",
                     )),
                 ),
@@ -182,7 +182,7 @@ fn execute() -> Result {
                     "industry_design",
                     action == "industry-design",
                     Some((
-                        "client",
+                        "exa-client",
                         "industrial_parameterized_tanks_and_assembly_emit_graphics_fixture",
                     )),
                 ),
@@ -192,7 +192,7 @@ fn execute() -> Result {
                     "column",
                     action == "column",
                     Some((
-                        "client",
+                        "exa-client",
                         "column_construction_and_external_connections_emit_graphics_fixture",
                     )),
                 ),
@@ -200,7 +200,7 @@ fn execute() -> Result {
                     "column_loop",
                     action == "column-loop",
                     Some((
-                        "client",
+                        "exa-client",
                         "reflux_equipment_and_complete_loop_emit_graphics_fixture",
                     )),
                 ),
@@ -208,20 +208,20 @@ fn execute() -> Result {
                     "containers",
                     true,
                     Some((
-                        "server",
+                        "exa-server",
                         "natural_spawn_is_safe_seeded_and_supports_sixteen_players",
                     )),
                 ),
                 "structures" => (
                     "structures",
                     false,
-                    Some(("server", "structure_sites_emit_fixture")),
+                    Some(("exa-server", "structure_sites_emit_fixture")),
                 ),
                 "ecology" => (
                     "ecology",
                     false,
                     Some((
-                        "server",
+                        "exa-server",
                         "ecology_sites_cover_materials_and_emit_graphics_fixture",
                     )),
                 ),
@@ -234,7 +234,7 @@ fn execute() -> Result {
             if let Some((package, filter)) = fixture {
                 let mut command = cargo(&repo);
                 command.args(["test", "-p", package, "--jobs", "2"]);
-                if package == "client" {
+                if package == "exa-client" {
                     command.args([
                         "--test",
                         if matches!(test, "column" | "column_loop") {
@@ -260,21 +260,21 @@ fn scenario(godot: &Godot, project: &Path, test: &str, headless: bool) -> Result
 }
 
 fn multiplayer(repo: &Path, target: &Path, godot: &Godot) -> Result {
-    run(cargo(repo).args(["build", "-p", "server", "--jobs", "2"]))?;
+    run(cargo(repo).args(["build", "-p", "exa-server", "--jobs", "2"]))?;
     let folder = support::unique_directory(target, "godot-network")?;
     let socket = UdpSocket::bind("127.0.0.1:0")?;
     let address = socket.local_addr()?;
     drop(socket);
     let save = folder.join("world3d.bin");
     let cert = folder.join("server.cert.der");
-    let mut command = std::process::Command::new(target.join("debug/server.exe"));
+    let mut command = std::process::Command::new(target.join("debug/exa-server.exe"));
     support::hidden(&mut command)
         .current_dir(repo)
-        .env("CDDA_BIND", address.to_string())
-        .env("CDDA_SAVE_PATH", &save)
-        .env("CDDA_CERT_PATH", &cert)
-        .env("CDDA_RUN_SECONDS", "25")
-        .env("CDDA_SHUTDOWN_ON_STDIN_CLOSE", "1")
+        .env("EXA_BIND", address.to_string())
+        .env("EXA_SAVE_PATH", &save)
+        .env("EXA_CERT_PATH", &cert)
+        .env("EXA_RUN_SECONDS", "25")
+        .env("EXA_SHUTDOWN_ON_STDIN_CLOSE", "1")
         .stdin(Stdio::piped())
         .stdout(fs::File::create(folder.join("server.out.log"))?)
         .stderr(fs::File::create(folder.join("server.err.log"))?);
@@ -296,9 +296,9 @@ fn multiplayer(repo: &Path, target: &Path, godot: &Godot) -> Result {
     let result = run(godot
         .command(&repo.join("godot"))?
         .args(["--headless", "--script", "res://tests/multiplayer.gd"])
-        .env("CDDA_TEST_ADDRESS", address.to_string())
-        .env("CDDA_SAVE_PATH", &save)
-        .env("CDDA_CERT_PATH", &cert));
+        .env("EXA_TEST_ADDRESS", address.to_string())
+        .env("EXA_SAVE_PATH", &save)
+        .env("EXA_CERT_PATH", &cert));
     server.stop()?;
     if !save.is_file() {
         return Err("Test authority did not save its isolated world".into());
@@ -335,8 +335,8 @@ fn export(repo: &Path, target: &Path, godot: &Godot, release: bool) -> Result {
     let stage = support::unique_directory(target, "godot-export-stage")?;
     for item in [
         "project.godot",
-        "game.gdextension",
-        "game.gdextension.uid",
+        "exa.gdextension",
+        "exa.gdextension.uid",
         "export_presets.cfg",
         "bin",
         "assets",
@@ -365,7 +365,7 @@ fn export(repo: &Path, target: &Path, godot: &Godot, release: bool) -> Result {
     fs::create_dir_all(stage.join(".godot"))?;
     fs::write(
         stage.join(".godot/extension_list.cfg"),
-        "res://game.gdextension\n",
+        "res://exa.gdextension\n",
     )?;
     run(godot
         .command(&stage)?
@@ -375,7 +375,7 @@ fn export(repo: &Path, target: &Path, godot: &Godot, release: bool) -> Result {
         .arg("--headless")
         .arg(format!("--{action}"))
         .arg("Windows Desktop")
-        .arg(output.join("Dungeon.exe")))?;
+        .arg(output.join("exa.exe")))?;
     println!("Exported runtime-only project: {}", output.display());
     Ok(())
 }
