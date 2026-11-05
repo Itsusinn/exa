@@ -76,7 +76,7 @@ func _ready() -> void:
 		design_buttons.add_child(button)
 	design_notice = Label.new()
 	design_notice.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	design_notice.text = "保存结构参数无需计算成功；塔径只决定几何，不代表热工认证。塔体暂不运行。"
+	design_notice.text = "设计可用于蒸馏塔或五口回流蒸馏塔；保存无需计算成功。塔径只决定几何，塔体暂不运行。"
 	content.add_child(design_notice)
 	fields.trays.value_changed.connect(func(value): fields.feed_tray.max_value = value)
 	var buttons := HBoxContainer.new()
@@ -311,5 +311,5 @@ func _load_design() -> void:
 
 func _use_design() -> void:
 	if host_view.bridge.use_column_design(column_draft()):
-		design_notice.text = "建造设计已冻结。持蒸馏塔按 B 查看，右键放置；当前塔体不运行。"
+		design_notice.text = "建造设计已冻结。持蒸馏塔或回流蒸馏塔按 B 查看，右键放置；塔体尚未运行。"
 	else: design_notice.text = "设计参数无效，未用于建造。"

@@ -47,7 +47,7 @@ fn volume(device: &EquipmentSnapshot) -> f64 {
     water_moles(device) * WATER_MOLAR_MASS_KG / WATER_DENSITY_KG_M3
 }
 fn potential(device: &EquipmentSnapshot) -> f64 {
-    if device.kind == EquipmentKind::Column {
+    if device.kind.is_planning() {
         return 0.0;
     }
     if device.kind == EquipmentKind::Vessel {

@@ -44,7 +44,9 @@ impl VoxelWorld {
             anyhow::ensure!(
                 matches!(
                     master.kind,
-                    EquipmentKind::HeatExchanger | EquipmentKind::Column
+                    EquipmentKind::HeatExchanger
+                        | EquipmentKind::Column
+                        | EquipmentKind::RefluxColumn
                 ) && master.revision == revision,
                 "设备类型或版本已变化。"
             );
@@ -60,7 +62,12 @@ impl VoxelWorld {
                     .equipment
                     .get(&id)
                     .filter(|d| {
-                        matches!(d.kind, EquipmentKind::HeatExchanger | EquipmentKind::Column)
+                        matches!(
+                            d.kind,
+                            EquipmentKind::HeatExchanger
+                                | EquipmentKind::Column
+                                | EquipmentKind::RefluxColumn
+                        )
                     })
                     .map_or(EquipmentKind::HeatExchanger, |d| d.kind),
                 status: AssemblyStatus::Rejected,

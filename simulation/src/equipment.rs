@@ -18,7 +18,8 @@ impl CollisionBox {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct EquipmentPort {
-    /// Stable within a device; paired ports share a circuit, never material.
+    /// Stable within a device. A circuit groups material ports; different circuits
+    /// never mix. Planning devices may have more than two ports in a circuit.
     pub id: u8,
     pub circuit: u8,
     pub position: [f32; 3],
@@ -55,7 +56,7 @@ pub fn placement_origin_configured(
 ) -> [i32; 3] {
     let size = if matches!(kind, EquipmentKind::Tank | EquipmentKind::Vessel) {
         tank_size.unwrap_or_default().size()
-    } else if kind == EquipmentKind::Column {
+    } else if kind.is_column() {
         column_design.map_or(kind.size(), ColumnDesign::size)
     } else {
         kind.size()
@@ -152,6 +153,17 @@ pub fn rack_compatible(a: &EquipmentSnapshot, b: &EquipmentSnapshot) -> bool {
     a.origin == b.origin && pipe_faces(pipe).iter().all(|face| *face != 2 && *face != 3)
 }
 
+/// Twelve T fittings: one opposing main pair and one of four perpendicular faces.
+/// Port order is the main negative end, main positive end, then the branch.
+pub fn tee_faces(axis: u8) -> [u8; 3] {
+    let main = (axis / 4).min(2);
+    let branch = (0..6)
+        .filter(|face| face / 2 != main)
+        .nth(usize::from(axis % 4))
+        .expect("four perpendicular faces");
+    [main * 2, main * 2 + 1, branch]
+}
+
 /// Conservative circular tank envelope made of 32 narrow strips, plus its nozzles.
 /// The same geometry is used for picking, server movement and client replay.
 pub fn collision_boxes(device: &EquipmentSnapshot) -> Vec<CollisionBox> {
@@ -161,20 +173,24 @@ pub fn collision_boxes(device: &EquipmentSnapshot) -> Vec<CollisionBox> {
         max: std::array::from_fn(|i| origin[i] + max[i]),
     };
     match device.kind {
-        EquipmentKind::Pipe => pipe_faces(device)
-            .into_iter()
-            .map(|face| {
-                let mut min = [0.375; 3];
-                let mut max = [0.625; 3];
-                let axis = usize::from(face / 2);
-                if face % 2 == 0 {
-                    min[axis] = 0.0;
-                } else {
-                    max[axis] = 1.0;
-                }
-                translated(min, max)
-            })
-            .collect(),
+        EquipmentKind::Pipe | EquipmentKind::Tee => (if device.kind == EquipmentKind::Tee {
+            tee_faces(device.axis).to_vec()
+        } else {
+            pipe_faces(device).to_vec()
+        })
+        .into_iter()
+        .map(|face| {
+            let mut min = [0.375; 3];
+            let mut max = [0.625; 3];
+            let axis = usize::from(face / 2);
+            if face % 2 == 0 {
+                min[axis] = 0.0;
+            } else {
+                max[axis] = 1.0;
+            }
+            translated(min, max)
+        })
+        .collect(),
         EquipmentKind::Pump | EquipmentKind::Valve => {
             let mut min = [0.375; 3];
             let mut max = [0.625; 3];
@@ -204,17 +220,19 @@ pub fn collision_boxes(device: &EquipmentSnapshot) -> Vec<CollisionBox> {
                 })
                 .collect()
         }
-        EquipmentKind::Tank | EquipmentKind::Vessel | EquipmentKind::Column => {
+        EquipmentKind::Tank
+        | EquipmentKind::Vessel
+        | EquipmentKind::Column
+        | EquipmentKind::RefluxColumn => {
             let mut boxes = Vec::with_capacity(34);
             let diameter = device.size()[0] as f32;
             let height = device.size()[1] as f32;
             let centre = diameter / 2.0;
-            let shell_radius =
-                if matches!(device.kind, EquipmentKind::Vessel | EquipmentKind::Column) {
-                    centre - 0.075
-                } else {
-                    centre - 0.1
-                };
+            let shell_radius = if device.kind == EquipmentKind::Vessel || device.kind.is_column() {
+                centre - 0.075
+            } else {
+                centre - 0.1
+            };
             for band in 0..32 {
                 let z0 = centre - shell_radius + band as f32 * (2.0 * shell_radius / 32.0);
                 let z1 = z0 + 2.0 * shell_radius / 32.0;
@@ -233,18 +251,9 @@ pub fn collision_boxes(device: &EquipmentSnapshot) -> Vec<CollisionBox> {
             }
             let nozzle_z = tank_nozzle_z_m(device);
             let neck = tank_nozzle_length_m(device);
-            if device.kind == EquipmentKind::Column {
+            if device.kind.is_column() {
                 for port in ports(device) {
-                    let y = port.position[1] - origin[1];
-                    let x = if port.normal[0] < 0 {
-                        0.0
-                    } else {
-                        diameter - neck
-                    };
-                    boxes.push(translated(
-                        [x, y - 0.125, nozzle_z - 0.125],
-                        [x + neck, y + 0.125, nozzle_z + 0.125],
-                    ));
+                    boxes.push(port_neck_box(port, neck));
                 }
                 return boxes;
             }
@@ -271,17 +280,36 @@ pub fn collision_boxes(device: &EquipmentSnapshot) -> Vec<CollisionBox> {
             }
             shapes
         }
+        EquipmentKind::Condenser | EquipmentKind::Reboiler => {
+            let mut shapes = vec![translated([0.2, 0.15, 0.2], [2.8, 1.85, 2.8])];
+            shapes.extend(ports(device).into_iter().map(|p| port_neck_box(p, 0.3)));
+            shapes
+        }
     }
+}
+
+fn port_neck_box(port: EquipmentPort, length: f32) -> CollisionBox {
+    let mut min = port.position.map(|p| p - 0.125);
+    let mut max = port.position.map(|p| p + 0.125);
+    let axis = port.normal.iter().position(|n| *n != 0).unwrap();
+    if port.normal[axis] < 0 {
+        min[axis] = port.position[axis];
+        max[axis] = min[axis] + length;
+    } else {
+        max[axis] = port.position[axis];
+        min[axis] = max[axis] - length;
+    }
+    CollisionBox { min, max }
 }
 
 pub fn ports(device: &EquipmentSnapshot) -> Vec<EquipmentPort> {
     let origin = device.origin.map(|v| v as f32);
-    if device.kind == EquipmentKind::Column {
+    if device.kind.is_column() {
         let Some(design) = device.column_design.as_ref().filter(|d| d.valid()) else {
             return vec![];
         };
         let n = f32::from(design.spec.trays);
-        return [n + 1.5 - f32::from(design.spec.feed_tray), n + 1.5, 0.5]
+        let mut result: Vec<_> = [n + 1.5 - f32::from(design.spec.feed_tray), n + 1.5, 0.5]
             .into_iter()
             .enumerate()
             .map(|(id, y)| EquipmentPort {
@@ -300,12 +328,68 @@ pub fn ports(device: &EquipmentSnapshot) -> Vec<EquipmentPort> {
                 normal: [if id == 0 { -1 } else { 1 }, 0, 0],
             })
             .collect();
+        if device.kind == EquipmentKind::RefluxColumn {
+            for (id, y, sign) in [(3, n + 0.5, 1), (4, 1.5, -1)] {
+                result.push(EquipmentPort {
+                    id,
+                    circuit: id,
+                    position: [
+                        origin[0] + tank_nozzle_z_m(device),
+                        origin[1] + y,
+                        origin[2]
+                            + if sign > 0 {
+                                f32::from(design.diameter)
+                            } else {
+                                0.0
+                            },
+                    ],
+                    normal: [0, 0, sign],
+                });
+            }
+        }
+        return result;
+    }
+    if matches!(
+        device.kind,
+        EquipmentKind::Condenser | EquipmentKind::Reboiler
+    ) {
+        let mut definitions = if device.kind == EquipmentKind::Condenser {
+            vec![
+                (0, [0.0, 1.5, 0.5], [-1, 0, 0]),
+                (0, [3.0, 1.5, 0.5], [1, 0, 0]),
+            ]
+        } else {
+            vec![
+                (0, [0.0, 0.5, 0.5], [-1, 0, 0]),
+                (0, [3.0, 0.5, 0.5], [1, 0, 0]),
+                (0, [2.5, 2.0, 0.5], [0, 1, 0]),
+            ]
+        };
+        definitions.extend([
+            (1, [0.0, 0.5, 2.5], [-1, 0, 0]),
+            (1, [3.0, 0.5, 2.5], [1, 0, 0]),
+        ]);
+        return definitions
+            .into_iter()
+            .enumerate()
+            .map(|(id, (circuit, p, normal))| EquipmentPort {
+                id: id as u8,
+                circuit,
+                position: std::array::from_fn(|i| origin[i] + p[i]),
+                normal,
+            })
+            .collect();
     }
     if device.kind == EquipmentKind::PipeRack {
         return vec![];
     }
-    if device.kind == EquipmentKind::Pipe {
-        return pipe_faces(device)
+    if matches!(device.kind, EquipmentKind::Pipe | EquipmentKind::Tee) {
+        let faces = if device.kind == EquipmentKind::Tee {
+            tee_faces(device.axis).to_vec()
+        } else {
+            pipe_faces(device).to_vec()
+        };
+        return faces
             .into_iter()
             .enumerate()
             .map(|(id, face)| {
@@ -518,6 +602,93 @@ mod tests {
             ports(&tank)[1],
             ports(&device(EquipmentKind::Pipe, [1, 1, -1], 1))[0]
         ));
+    }
+
+    #[test]
+    fn reflux_devices_expose_distinct_grid_ports_inside_shared_geometry() {
+        for kind in [
+            EquipmentKind::RefluxColumn,
+            EquipmentKind::Condenser,
+            EquipmentKind::Reboiler,
+            EquipmentKind::Tee,
+        ] {
+            for axis in 0..kind.axis_count() {
+                for diameter in [2, 6] {
+                    let mut d = device(kind, [-17, 16, -17], axis);
+                    d.column_design = kind.is_column().then(|| ColumnDesign {
+                        diameter,
+                        ..Default::default()
+                    });
+                    assert!(d.valid());
+                    let ps = ports(&d);
+                    if kind == EquipmentKind::RefluxColumn {
+                        let mut legacy = d.clone();
+                        legacy.kind = EquipmentKind::Column;
+                        assert_eq!(&ps[..3], ports(&legacy).as_slice());
+                    }
+                    assert_eq!(
+                        ps.len(),
+                        match kind {
+                            EquipmentKind::RefluxColumn | EquipmentKind::Reboiler => 5,
+                            EquipmentKind::Condenser => 4,
+                            _ => 3,
+                        }
+                    );
+                    let boxes = collision_boxes(&d);
+                    let envelope = bounds(&d);
+                    for b in &boxes {
+                        assert!((0..3)
+                            .all(|i| b.min[i] >= envelope.min[i] && b.max[i] <= envelope.max[i]));
+                    }
+                    let mut grid = Grid::unknown();
+                    grid.equipment.insert(d.id, d.clone());
+                    for (index, p) in ps.iter().enumerate() {
+                        assert_eq!(p.id as usize, index);
+                        assert!(ps[..index].iter().all(|other| other.position != p.position));
+                        let along = p.normal.iter().position(|n| *n != 0).unwrap();
+                        for i in 0..3 {
+                            assert_eq!(
+                                p.position[i].fract().abs(),
+                                if i == along { 0.0 } else { 0.5 }
+                            );
+                        }
+                        let inside =
+                            std::array::from_fn(|i| p.position[i] - p.normal[i] as f32 * 0.001);
+                        assert!(
+                            boxes.iter().any(|b| b.contains(inside)),
+                            "{kind:?} {axis} {p:?}"
+                        );
+                        let anchor = protocol::PipeAnchor {
+                            id: d.id,
+                            revision: d.revision,
+                            port: p.id,
+                        };
+                        let cell = crate::pipe_route::anchor_cell(&grid, anchor).unwrap();
+                        let neighbour = device(EquipmentKind::Pipe, cell, along as u8);
+                        assert!(ports(&neighbour)
+                            .into_iter()
+                            .any(|other| connected(*p, other)));
+                    }
+                    assert!(crate::pipe_route::anchor_cell(
+                        &grid,
+                        protocol::PipeAnchor {
+                            id: d.id,
+                            revision: d.revision,
+                            port: ps.len() as u8
+                        }
+                    )
+                    .is_err());
+                }
+            }
+        }
+        let arrangements: std::collections::BTreeSet<_> = (0..12)
+            .map(|axis| {
+                let mut faces = tee_faces(axis);
+                faces.sort_unstable();
+                faces
+            })
+            .collect();
+        assert_eq!(arrangements.len(), 12);
     }
 
     #[test]

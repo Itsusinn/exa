@@ -60,9 +60,9 @@ func _draw() -> void:
 			draw_rect(Rect2(center-Vector2(11,15),Vector2(3,26)),Color("4a4f46"))
 			draw_rect(Rect2(center+Vector2(8,-15),Vector2(3,26)),Color("4a4f46"))
 			draw_rect(Rect2(center-Vector2(2,10),Vector2(4,6)),Palette.MUTED)
-		if item.name in ["储罐","管道","测试泵","阀门","蒸馏塔"]:
+		if item.name in ["储罐","管道","测试泵","阀门","蒸馏塔","回流蒸馏塔","冷凝器","再沸器","回流三通"]:
 			draw_rect(Rect2(center-Vector2(16,16),Vector2(32,28)),Color("202728"))
-			if item.name == "蒸馏塔":
+			if item.name in ["蒸馏塔","回流蒸馏塔"]:
 				draw_rect(Rect2(center-Vector2(7,13),Vector2(14,25)),Color("87969b"))
 				draw_ellipse_icon(center-Vector2(0,13),Vector2(7,3),Color("b3bec1"))
 				draw_ellipse_icon(center+Vector2(0,12),Vector2(7,3),Color("62757c"))
@@ -71,6 +71,21 @@ func _draw() -> void:
 				draw_line(center+Vector2(-13,-1),center+Vector2(-7,-1),Color("d2b16d"),3)
 				draw_line(center+Vector2(7,-10),center+Vector2(13,-10),Color("b3bec1"),3)
 				draw_line(center+Vector2(7,10),center+Vector2(13,10),Color("b3bec1"),3)
+				if item.name == "回流蒸馏塔":
+					draw_polyline(PackedVector2Array([center+Vector2(12,-10),center+Vector2(16,-10),center+Vector2(16,-3),center+Vector2(7,-3)]),Color("70c9b0"),2)
+			elif item.name in ["冷凝器","再沸器"]:
+				var accent := Color("78b7cd") if item.name == "冷凝器" else Color("d5a364")
+				draw_rect(Rect2(center-Vector2(13,7),Vector2(26,14)),Color("87969b"))
+				for level in [-4,0,4]: draw_line(center+Vector2(-10,level),center+Vector2(10,level),accent,2)
+				draw_line(center+Vector2(-16,0),center+Vector2(-12,0),Color("b3bec1"),4)
+				draw_line(center+Vector2(12,0),center+Vector2(16,0),Color("b3bec1"),4)
+				draw_line(center+Vector2(-7,7),center+Vector2(-7,12),accent,3)
+				draw_line(center+Vector2(7,7),center+Vector2(7,12),accent,3)
+				if item.name == "再沸器": draw_line(center+Vector2(3,-7),center+Vector2(3,-13),accent,4)
+			elif item.name == "回流三通":
+				draw_line(center-Vector2(14,0),center+Vector2(14,0),Color("a8b5ba"),7)
+				draw_line(center,center-Vector2(0,14),Color("70c9b0"),7)
+				draw_circle(center,5,Color("62757c"))
 			elif item.name == "储罐":
 				draw_rect(Rect2(center-Vector2(11,12),Vector2(22,23)),Color("87969b"))
 				draw_ellipse_icon(center-Vector2(0,12),Vector2(11,4),Color("b3bec1"))

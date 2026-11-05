@@ -148,6 +148,13 @@ godot-column:
 godot-column-graphics:
     cargo +nightly -Zscript scripts/godot.rs column-graphics
 
+# Physical reflux equipment and process-line assembly; no distillation operation.
+godot-column-loop:
+    cargo +nightly -Zscript scripts/godot.rs column-loop
+
+godot-column-loop-graphics:
+    cargo +nightly -Zscript scripts/godot.rs column-loop-graphics
+
 # 真实 QUIC 探索后在图形窗口验证负坐标区块加载、卸载与保存
 godot-streaming:
     cargo +nightly -Zscript scripts/godot.rs streaming

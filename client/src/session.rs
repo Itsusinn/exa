@@ -688,7 +688,9 @@ impl Session {
     }
     pub fn edit_block(&mut self, yaw: f32, pitch: f32, place: bool) {
         if place
-            && self.selected_equipment() == Some(EquipmentKind::Column)
+            && self
+                .selected_equipment()
+                .is_some_and(EquipmentKind::is_column)
             && self.column_design.is_none()
         {
             self.model.container_error = "请按 J 准备塔体设计并用于建造。".into();
@@ -703,7 +705,8 @@ impl Session {
             let command = if place {
                 self.selected_equipment()
                     .map(|kind| EquipmentCommand::Place {
-                        column_design: (kind == EquipmentKind::Column)
+                        column_design: kind
+                            .is_column()
                             .then(|| self.column_design.clone())
                             .flatten(),
                         target: hit.position,
@@ -718,14 +721,8 @@ impl Session {
                             } else {
                                 0
                             }
-                        } else if matches!(
-                            kind,
-                            EquipmentKind::Pipe
-                                | EquipmentKind::Pump
-                                | EquipmentKind::Valve
-                                | EquipmentKind::PipeRack
-                        ) {
-                            self.equipment_axis
+                        } else if kind.axis_count() > 1 {
+                            self.equipment_axis % kind.axis_count()
                         } else {
                             0
                         },
@@ -814,7 +811,7 @@ impl Session {
             return None;
         }
         let kind = self.selected_equipment()?;
-        if kind == EquipmentKind::Column && self.column_design.is_none() {
+        if kind.is_column() && self.column_design.is_none() {
             return None;
         }
         let hit = equipment::target(&self.model.terrain, self.model.body.position, yaw, pitch)?;
@@ -824,7 +821,8 @@ impl Session {
             kind,
             tank_size: matches!(kind, EquipmentKind::Tank | EquipmentKind::Vessel)
                 .then_some(self.tank_size),
-            column_design: (kind == EquipmentKind::Column)
+            column_design: kind
+                .is_column()
                 .then(|| self.column_design.clone())
                 .flatten(),
             origin: equipment::placement_origin_configured(
@@ -839,14 +837,8 @@ impl Session {
                 } else {
                     0
                 }
-            } else if matches!(
-                kind,
-                EquipmentKind::Pipe
-                    | EquipmentKind::Pump
-                    | EquipmentKind::Valve
-                    | EquipmentKind::PipeRack
-            ) {
-                self.equipment_axis
+            } else if kind.axis_count() > 1 {
+                self.equipment_axis % kind.axis_count()
             } else {
                 0
             },

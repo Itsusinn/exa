@@ -80,15 +80,12 @@ impl GameBridge {
             };
             return;
         }
-        if self.session.selected_equipment().is_some_and(|kind| {
-            matches!(
-                kind,
-                protocol::EquipmentKind::Pipe
-                    | protocol::EquipmentKind::Pump
-                    | protocol::EquipmentKind::Valve
-            )
-        }) {
-            self.session.equipment_axis = (self.session.equipment_axis + 1) % 3;
+        if let Some(kind) = self
+            .session
+            .selected_equipment()
+            .filter(|kind| kind.axis_count() > 1)
+        {
+            self.session.equipment_axis = (self.session.equipment_axis + 1) % kind.axis_count();
         }
     }
 
@@ -342,16 +339,29 @@ impl GameBridge {
 
     #[func]
     fn column_selected(&self) -> bool {
-        self.session.selected_equipment() == Some(protocol::EquipmentKind::Column)
+        self.session
+            .selected_equipment()
+            .is_some_and(protocol::EquipmentKind::is_column)
     }
 
     #[func]
-    fn column_geometry(&self, input: VarDictionary) -> VarDictionary {
+    fn column_build_kind(&self) -> i32 {
+        self.session
+            .selected_equipment()
+            .filter(|kind| kind.is_column())
+            .map_or(-1, equipment_kind_id)
+    }
+
+    #[func]
+    fn column_geometry(&self, kind: i32, input: VarDictionary) -> VarDictionary {
+        let Some(kind) = equipment_kind(kind).filter(|kind| kind.is_column()) else {
+            return VarDictionary::new();
+        };
         let Some(design) = parse_column_design(&input) else {
             return VarDictionary::new();
         };
         geometry(presentation::equipment_shape_configured(
-            protocol::EquipmentKind::Column,
+            kind,
             0,
             None,
             Some(&design),
@@ -463,21 +473,13 @@ impl GameBridge {
 
     #[func]
     fn equipment_geometry(&self, kind: i32, axis: i32) -> VarDictionary {
-        if !(0..=6).contains(&kind) || !(0..=2).contains(&axis) {
+        let Some(kind) = equipment_kind(kind) else {
+            return VarDictionary::new();
+        };
+        if !(0..i32::from(kind.axis_count())).contains(&axis) {
             return VarDictionary::new();
         }
-        geometry(presentation::equipment_shape(
-            match kind {
-                0 => protocol::EquipmentKind::Tank,
-                1 => protocol::EquipmentKind::Pipe,
-                2 => protocol::EquipmentKind::Pump,
-                3 => protocol::EquipmentKind::Valve,
-                4 => protocol::EquipmentKind::Vessel,
-                5 => protocol::EquipmentKind::HeatExchanger,
-                _ => protocol::EquipmentKind::PipeRack,
-            },
-            axis as u8,
-        ))
+        geometry(presentation::equipment_shape(kind, axis as u8))
     }
 
     #[func]
@@ -847,6 +849,62 @@ fn column_number(value: Variant) -> Option<f64> {
         .filter(|n| n.is_finite())
 }
 
+fn equipment_kind(id: i32) -> Option<protocol::EquipmentKind> {
+    use protocol::EquipmentKind::*;
+    Some(match id {
+        0 => Tank,
+        1 => Pipe,
+        2 => Pump,
+        3 => Valve,
+        4 => Vessel,
+        5 => HeatExchanger,
+        6 => PipeRack,
+        7 => Column,
+        8 => RefluxColumn,
+        9 => Condenser,
+        10 => Reboiler,
+        11 => Tee,
+        _ => return None,
+    })
+}
+
+fn equipment_kind_id(kind: protocol::EquipmentKind) -> i32 {
+    use protocol::EquipmentKind::*;
+    match kind {
+        Tank => 0,
+        Pipe => 1,
+        Pump => 2,
+        Valve => 3,
+        Vessel => 4,
+        HeatExchanger => 5,
+        PipeRack => 6,
+        Column => 7,
+        RefluxColumn => 8,
+        Condenser => 9,
+        Reboiler => 10,
+        Tee => 11,
+    }
+}
+
+fn port_role(kind: protocol::EquipmentKind, id: u8) -> &'static str {
+    use protocol::EquipmentKind::*;
+    let roles: &[&str] = match kind {
+        Column => &["进料", "塔顶产品", "塔底产品"],
+        RefluxColumn => &["进料", "塔顶蒸气", "塔底液", "回流入口", "再沸蒸气返回"],
+        Condenser => &["蒸气入口", "冷凝液出口", "冷却介质入口", "冷却介质出口"],
+        Reboiler => &[
+            "塔底液入口",
+            "塔底产品",
+            "返塔蒸气出口",
+            "热媒入口",
+            "热媒出口",
+        ],
+        Tee => &["主管负面", "主管正面", "支口"],
+        _ => &[],
+    };
+    roles.get(usize::from(id)).copied().unwrap_or("")
+}
+
 fn equipment_dictionary(device: &protocol::EquipmentSnapshot) -> VarDictionary {
     let pipe_ends: VarArray = device
         .pipe_ends
@@ -855,7 +913,7 @@ fn equipment_dictionary(device: &protocol::EquipmentSnapshot) -> VarDictionary {
         .map(|face| i32::from(face).to_variant())
         .collect();
     let ports: VarArray = presentation::equipment_ports(device).iter().map(|port| {
-        vdict! { "id" => i64::from(port.id), "circuit" => i64::from(port.circuit), "position" => vector(port.position), "normal" => Vector3i::new(port.normal[0], port.normal[1], port.normal[2]) }.to_variant()
+        vdict! { "id" => i64::from(port.id), "role" => port_role(device.kind,port.id), "circuit" => i64::from(port.circuit), "position" => vector(port.position), "normal" => Vector3i::new(port.normal[0], port.normal[1], port.normal[2]) }.to_variant()
     }).collect();
     let contents: VarArray = device
         .contents
@@ -865,7 +923,7 @@ fn equipment_dictionary(device: &protocol::EquipmentSnapshot) -> VarDictionary {
         })
         .collect();
     vdict! { "id" => device.id as i64, "revision" => device.revision as i64,
-    "name" => device.kind.item_name(), "kind" => match device.kind { protocol::EquipmentKind::Tank => 0i32, protocol::EquipmentKind::Pipe => 1, protocol::EquipmentKind::Pump => 2, protocol::EquipmentKind::Valve => 3, protocol::EquipmentKind::Vessel => 4, protocol::EquipmentKind::HeatExchanger => 5, protocol::EquipmentKind::PipeRack => 6, protocol::EquipmentKind::Column => 7 },
+    "name" => device.kind.item_name(), "kind" => equipment_kind_id(device.kind), "planning" => device.kind.is_planning(),
     "origin" => Vector3i::new(device.origin[0],device.origin[1],device.origin[2]), "axis" => i64::from(device.axis),
     "ports" => &ports, "pipe_ends" => &pipe_ends, "contents" => &contents, "internal_energy_j" => device.internal_energy_j,
     "diameter" => device.size()[0], "height" => device.size()[1], "column_design" => &device.column_design.as_ref().map_or_else(VarDictionary::new,column_design_dictionary),

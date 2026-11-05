@@ -117,7 +117,7 @@ impl VoxelWorld {
             Command::Help => unreachable!(),
             Command::IndustryKit => {
                 self.industry_kit(id)?;
-                Ok("已领取工业测试补给：2 个水罐、4 个密闭容器、1 台换热器、16 段管道、2 台泵、2 个阀门。右键建造，R 旋转，E 检查和控制。".into())
+                Ok("已领取工业测试补给，含罐体、管泵阀、蒸馏塔、冷凝器、再沸器与回流三通。背包中选择设备移至快捷栏；右键建造，R 旋转，E 检查。".into())
             }
             Command::IndustryFill(equipment, liters, temperature) => {
                 self.exchange_water(id, equipment, Some((liters, temperature)))?;

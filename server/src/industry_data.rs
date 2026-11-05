@@ -115,6 +115,10 @@ impl EquipmentData {
                 EquipmentKind::HeatExchanger => "game:heat_exchanger",
                 EquipmentKind::PipeRack => "game:pipe_rack",
                 EquipmentKind::Column => "game:column",
+                EquipmentKind::RefluxColumn => "game:reflux_column",
+                EquipmentKind::Condenser => "game:condenser",
+                EquipmentKind::Reboiler => "game:reboiler",
+                EquipmentKind::Tee => "game:tee",
             }
             .into(),
             origin: value.origin,
@@ -150,6 +154,10 @@ impl EquipmentData {
             "game:heat_exchanger" => EquipmentKind::HeatExchanger,
             "game:pipe_rack" => EquipmentKind::PipeRack,
             "game:column" => EquipmentKind::Column,
+            "game:reflux_column" => EquipmentKind::RefluxColumn,
+            "game:condenser" => EquipmentKind::Condenser,
+            "game:reboiler" => EquipmentKind::Reboiler,
+            "game:tee" => EquipmentKind::Tee,
             _ => anyhow::bail!("unknown saved equipment kind"),
         };
         let value = EquipmentSnapshot {

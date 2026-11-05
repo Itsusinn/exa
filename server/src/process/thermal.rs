@@ -126,8 +126,8 @@ pub fn solve(input: &[EquipmentSnapshot], dt: f64) -> Result<FlowStep, String> {
         }
         group.sort_unstable();
         let batch: Vec<_> = group.iter().map(|&i| devices[i].clone()).collect();
-        let result = if batch.iter().any(|d| d.kind == EquipmentKind::Column) {
-            Err("蒸馏塔尚未运行，仅支持外部接管检查".into())
+        let result = if batch.iter().any(|d| d.kind.is_planning()) {
+            Err("蒸馏塔尚未运行；冷凝、再沸及三通管组仅检查结构".into())
         } else if batch
             .iter()
             .any(|d| matches!(d.kind, EquipmentKind::Vessel | EquipmentKind::HeatExchanger))
@@ -793,6 +793,42 @@ mod tests {
                 .unwrap()
                 .status
                 .contains("蒸馏塔尚未运行"));
+        }
+    }
+    #[test]
+    fn every_new_planning_device_pauses_its_connected_group_without_touching_facts() {
+        for kind in [
+            EquipmentKind::RefluxColumn,
+            EquipmentKind::Condenser,
+            EquipmentKind::Reboiler,
+            EquipmentKind::Tee,
+        ] {
+            let mut devices = water_exchanger();
+            let mut planned = device(100, kind, [20, 10, 0]);
+            if kind.is_column() {
+                planned.column_design = Some(protocol::ColumnDesign::default());
+            }
+            let connection = ports(&planned)[0];
+            let mut source = device(
+                101,
+                EquipmentKind::Vessel,
+                [18, connection.position[1] as i32, 0],
+            );
+            charge(&mut source, [1000.0, 1000.0], 320.0).unwrap();
+            assert!(game_simulation::equipment::connected(
+                ports(&source)[1],
+                connection
+            ));
+            devices.extend([planned.clone(), source.clone()]);
+            let before = devices[0].contents.clone();
+            let result = solve(&devices, 0.2).unwrap();
+            assert_ne!(result.devices[0].contents, before);
+            for old in [planned, source] {
+                let new = result.devices.iter().find(|d| d.id == old.id).unwrap();
+                assert_eq!(new.contents, old.contents);
+                assert_eq!(new.internal_energy_j, old.internal_energy_j);
+                assert!(new.reading.as_ref().unwrap().status.contains("尚未运行"));
+            }
         }
     }
     #[test]

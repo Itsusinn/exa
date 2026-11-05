@@ -228,11 +228,13 @@ func show_build(host: Node3D) -> bool:
 	close()
 	host_view = host
 	build_opened = true
-	build_title.text = "蒸馏塔 · 已冻结设计" if column else "%s · 建造规格" % spec.name
+	var reflux: bool = host.bridge.column_build_kind() == 8
+	build_title.text = ("回流蒸馏塔 · 已冻结设计" if reflux else "蒸馏塔 · 已冻结设计") if column else "%s · 建造规格" % spec.name
 	build_diameter.get_parent().visible = not column
 	build_height.get_parent().visible = not column
 	build_import.visible = column
 	build_note.text = "每台消耗 1 件测试设备；建成后固定。\n塔体暂不运行；三口只作外部接管检查。" if column else "每台消耗 1 件测试设备\n建成后尺寸固定；喷嘴位于底部两侧。"
+	if reflux: build_note.text = "每台消耗 1 件测试设备；建成后固定。\n五口连接冷凝、回流和再沸装置。\n本阶段只检查工艺接管，尚未运行。"
 	if not column:
 		build_diameter.value = spec.diameter
 		build_height.value = spec.height
@@ -258,7 +260,7 @@ func shape_mesh(host: Node3D, kind: int, axis: int, pipe_ends: Array = [], diame
 	if not meshes.has(key):
 		var data: Dictionary = host.bridge.pipe_geometry(axis,pipe_ends[0],pipe_ends[1]) if kind == 1 and pipe_ends.size() == 2 else host.bridge.equipment_geometry(kind,axis)
 		if kind in [0,4]: data = host.bridge.tank_geometry(kind,diameter,height)
-		if kind == 7: data = host.bridge.column_geometry(column_design)
+		if kind in [7,8]: data = host.bridge.column_geometry(kind,column_design)
 		var mesh: ArrayMesh = host._mesh(data)
 		if mesh.get_surface_count() > 0: mesh.surface_set_material(0,metal)
 		meshes[key] = mesh
@@ -398,16 +400,23 @@ func show_device(device: Dictionary) -> void:
 
 func _describe(device: Dictionary) -> void:
 	var lines := PackedStringArray(["%s  #%d" % [device.name,device.id], "位置  %s" % device.origin])
-	if device.kind == 7:
+	if device.kind in [7,8]:
 		var design: Dictionary = device.column_design
 		var spec: Dictionary = design.spec
 		lines.append("直径 %d m · 高度 %d m · %d 板 · 进料板 %d" % [design.diameter,spec.trays+2,spec.trays,spec.feed_tray])
 		lines.append("设计进料 %.3f mol/s · 丁烷 %.3f · %.2f K · %.1f kPa\n回流比 %.3f · 馏出比例 %.3f" % [spec.feed_mol_s,spec.butane_fraction,spec.feed_temperature_k,spec.pressure_pa/1000.0,spec.reflux_ratio,spec.distillate_fraction])
-		lines.append("未运行 · 仅保存结构参数，未绑定数值审计\n0 进料（−X） / 1 塔顶产品（+X） / 2 塔底产品（+X）\n接管检查不代表完整冷凝、回流、再沸装置或热工合格。")
+		lines.append("未运行 · 仅保存结构参数，未绑定数值审计")
+		lines.append("工艺接管检查不包含冷却水/热媒系统，也不代表热工合格。" if device.kind == 8 else "三罐接管检查不代表完整冷凝、回流、再沸装置或热工合格。")
+	if device.kind in [7,8,9,10,11]:
+		for port in device.ports:
+			lines.append("%d %s · %s" % [port.id,port.role,_port_direction(port.normal)])
+		if device.kind in [9,10,11]: lines.append("规划设备 · 尚未运行；接入管组暂停并保留物料。")
+		if device.kind in [9,10]: lines.append("公用工程接口已预留，本阶段不检查供热或冷却能力。")
 	if device.kind in [0,4]: lines.append("直径 %d m · 高度 %d m · 有效容量 %.1f L" % [device.diameter,device.height,device.design_capacity_m3*1000])
 	if device.kind == 1 and device.get("pipe_ends",[]).size() == 2:
 		var faces := ["−X","+X","−Y","+Y","−Z","+Z"]
 		lines.append("接头  %s ↔ %s" % [faces[device.pipe_ends[0]],faces[device.pipe_ends[1]]])
+	elif device.kind == 11: lines.append("三通朝向 %d / 12 · R 切换建造朝向" % [device.axis+1])
 	elif device.kind not in [0,4]: lines.append("方向  %s 轴 · %d 个端口" % [["X","Y","Z"][device.axis],device.ports.size()])
 	if device.kind == 6 and records.values().any(func(other): return other.kind == 1 and other.origin == device.origin):
 		lines.append("正在承托管道 · 先拆管后拆架")
@@ -426,7 +435,7 @@ func _describe(device: Dictionary) -> void:
 				lines.append("液量  %.1f / %.1f L" % [reading.volume_m3*1000,reading.capacity_m3*1000])
 			# A heat exchanger has two independent passages, not one aggregate stream.
 			# Its temperatures and signed flows are presented per side below.
-			if device.kind not in [5,7]:
+			if device.kind not in [5,7,8,9,10,11]:
 				lines.append("绝对压力  %s · %s %+.3f L/s" % ["未计算" if reading.pressure_pa == null else "%.2f kPa" % (reading.pressure_pa/1000),"净流入" if device.kind in [0,4] else "流量",reading.flow_m3_s*1000])
 				if reading.temperature_k != null: lines.append("温度  %.2f K / %.1f °C" % [reading.temperature_k,reading.temperature_k-273.15])
 				else: lines.append("温度  未计算")
@@ -449,15 +458,20 @@ func _describe(device: Dictionary) -> void:
 		valve_buttons[index].disabled = pending_revision >= 0 or is_equal_approx(device.opening,index*0.25)
 	thermal_apply.disabled = pending_revision >= 0
 	thermal_reload.disabled = pending_revision >= 0
-	assembly_button.visible = device.kind in [5,7]
-	assembly_button.text = "检查三罐外部接管" if device.kind == 7 else "检查换热单元结构"
-	assembly_facts.visible = device.kind in [5,7]
-	if device.kind in [5,7]: _describe_assembly()
+	assembly_button.visible = device.kind in [5,7,8]
+	assembly_button.text = {5:"检查换热单元结构",7:"检查三罐外部接管",8:"检查冷凝、回流与再沸工艺接管"}.get(device.kind,"")
+	assembly_facts.visible = device.kind in [5,7,8]
+	if device.kind in [5,7,8]: _describe_assembly()
+
+func _port_direction(normal: Vector3i) -> String:
+	if normal.x != 0: return "−X" if normal.x < 0 else "+X"
+	if normal.y != 0: return "−Y" if normal.y < 0 else "+Y"
+	return "−Z" if normal.z < 0 else "+Z"
 
 func _check_assembly() -> void:
 	if not opened or not records.has(selected_id): return
 	var device: Dictionary = records[selected_id]
-	if device.kind not in [5,7]: return
+	if device.kind not in [5,7,8]: return
 	assembly_started = Time.get_ticks_msec()
 	host_view.bridge.check_assembly(selected_id,device.revision,host_view.yaw,host_view.pitch)
 	_describe_assembly()
@@ -469,6 +483,9 @@ func _describe_assembly() -> void:
 		assembly_facts.text = "等待结构检查…" if assembly_button.disabled else "尚未收到检查结果，可重新检查。"
 		return
 	if report.get("master_id",0) != selected_id:
+		if records[selected_id].kind == 8:
+			assembly_facts.text = "进料罐、回流罐和两产品罐须独立。\n塔顶经冷凝器进入回流罐，经泵和三通分成回流与馏出；塔底经再沸器分成返汽与产品。\n仅检查九条工艺线路，公用工程和实际运行尚未实现。"
+			return
 		if records[selected_id].kind == 7:
 			assembly_facts.text = "三个独立密闭罐：进料线一泵一阀，两产品线各一阀。\n仅检查外部连接；塔体暂不运行。"
 			return
@@ -480,9 +497,10 @@ func _describe_assembly() -> void:
 		scroll_area.set_deferred("scroll_vertical",int(assembly_button.position.y))
 	var statuses := {"complete":"结构完整","incomplete":"结构不完整","stale":"结构已变化，请重新检查","rejected":"检查未执行"}
 	var lines := PackedStringArray([statuses.get(report.status,report.status),report.message])
+	var labels: Array = {5:["A 进料","A 出料","B 进料","B 出料"],7:["进料","塔顶产品","塔底产品"],8:["进料","塔顶蒸气","冷凝液","回流泵至三通","回流返回","馏出产品","塔底至再沸器","再沸蒸气返回","塔底产品"]}.get(records[selected_id].kind,[])
 	for line in report.get("lines",[]):
-		var label: String = (["进料","塔顶产品","塔底产品"] if records[selected_id].kind == 7 else ["A 进料","A 出料","B 进料","B 出料"])[line.port]
-		lines.append("%s：%s" % [label,line.message])
+		var label: String = labels[line.port] if line.port >= 0 and line.port < labels.size() else "线路 %d" % line.port
+		lines.append(line.message if records[selected_id].kind == 8 else "%s：%s" % [label,line.message])
 		var parts := PackedStringArray()
 		for part in [["tank_id","罐"],["pump_id","泵"],["valve_id","阀"]]:
 			if line.get(part[0],0) > 0: parts.append("%s #%d" % [part[1],line[part[0]]])

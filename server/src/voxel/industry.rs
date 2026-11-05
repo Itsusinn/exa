@@ -19,6 +19,10 @@ impl VoxelWorld {
             (protocol::HEAT_EXCHANGER_ITEM, 1),
             (protocol::PIPE_RACK_ITEM, 8),
             (protocol::COLUMN_ITEM, 1),
+            (protocol::REFLUX_COLUMN_ITEM, 1),
+            (protocol::CONDENSER_ITEM, 1),
+            (protocol::REBOILER_ITEM, 1),
+            (protocol::TEE_ITEM, 2),
         ] {
             anyhow::ensure!(
                 insert(
@@ -964,6 +968,62 @@ mod tests {
         let current: Save = rmp_serde::from_slice(&std::fs::read(&path).unwrap()[8..]).unwrap();
         assert_eq!(current.version, 13);
         assert_eq!(VoxelWorld::load(&path).unwrap().terrain.equipment, expected);
+    }
+
+    #[test]
+    fn reflux_foundation_roundtrips_existing_archive_layout_and_preserves_old_columns() {
+        let (mut world, _rx) = world();
+        world.terrain.equipment = crate::assembly::reflux_fixture([0, 81, 0]);
+        let mut legacy = world.terrain.equipment[&1].clone();
+        legacy.id = 90;
+        legacy.kind = EquipmentKind::Column;
+        legacy.origin = [-10, 81, 8];
+        world.terrain.equipment.insert(90, legacy.clone());
+        world.next_equipment_id = world.terrain.equipment.keys().max().unwrap() + 1;
+        crate::process::charge(
+            world.terrain.equipment.get_mut(&2).unwrap(),
+            [1000.0, 500.0],
+            320.0,
+        )
+        .unwrap();
+        world.industry_ledger.heat_added_j = 123.0;
+        world.industry_ledger.pump_work_j = 45.0;
+        let expected = world.terrain.equipment.clone();
+        let ledger = world.industry_ledger.clone();
+        let dir = directory();
+        let path = dir.path().join("world3d.bin");
+        world.save(&path).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let restored = VoxelWorld::load(&path).unwrap();
+        assert_eq!(restored.terrain.equipment, expected);
+        assert_eq!(restored.industry_ledger, ledger);
+        assert_eq!(
+            game_simulation::equipment::ports(&restored.terrain.equipment[&90]).len(),
+            3
+        );
+        assert_eq!(
+            crate::assembly::inspect(&restored.terrain.equipment, 1, 1).status,
+            protocol::AssemblyStatus::Complete
+        );
+        let manifest: Save = rmp_serde::from_slice(&before[8..]).unwrap();
+        assert_eq!(manifest.version, 13);
+        let archive_path = path
+            .with_extension("industry")
+            .join(format!("{}.rkyv", manifest.industry_archive.unwrap()));
+        let mut archive = crate::industry_data::read(&archive_path).unwrap();
+        assert_eq!(archive.data_version, 6);
+        archive
+            .equipment
+            .iter_mut()
+            .find(|d| d.id == 3)
+            .unwrap()
+            .kind = "game:future_condenser".into();
+        std::fs::remove_file(&archive_path).unwrap();
+        crate::industry_data::write_new(&archive_path, &archive).unwrap();
+        let malformed = std::fs::read(&archive_path).unwrap();
+        assert!(VoxelWorld::load(&path).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert_eq!(std::fs::read(&archive_path).unwrap(), malformed);
     }
 
     #[test]

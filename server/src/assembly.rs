@@ -6,6 +6,9 @@ use protocol::{
     MAX_EQUIPMENT,
 };
 use std::collections::{BTreeMap, BTreeSet};
+mod reflux;
+#[cfg(test)]
+pub(crate) use reflux::fixture::fixture as reflux_fixture;
 
 /// Only built structure affects report validity; running material/control readings do not.
 #[derive(Clone, Debug, PartialEq)]
@@ -45,6 +48,12 @@ pub fn inspect(
     master_id: u64,
     request_id: u64,
 ) -> AssemblyReport {
+    if devices
+        .get(&master_id)
+        .is_some_and(|d| d.kind == EquipmentKind::RefluxColumn)
+    {
+        return reflux::inspect(devices, master_id, request_id);
+    }
     let mut report = AssemblyReport {
         request_id,
         master_id,

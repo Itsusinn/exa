@@ -44,6 +44,8 @@ const ACTIONS: &[&str] = &[
     "distillation-graphics",
     "column",
     "column-graphics",
+    "column-loop",
+    "column-loop-graphics",
     "streaming",
     "commands",
     "streaming-perf",
@@ -177,6 +179,14 @@ fn execute() -> Result {
                         "column_construction_and_external_connections_emit_graphics_fixture",
                     )),
                 ),
+                "column-loop" | "column-loop-graphics" => (
+                    "column_loop",
+                    action == "column-loop",
+                    Some((
+                        "client",
+                        "reflux_equipment_and_complete_loop_emit_graphics_fixture",
+                    )),
+                ),
                 "containers" => (
                     "containers",
                     true,
@@ -210,8 +220,8 @@ fn execute() -> Result {
                 if package == "client" {
                     command.args([
                         "--test",
-                        if test == "column" {
-                            "column"
+                        if matches!(test, "column" | "column_loop") {
+                            test
                         } else {
                             "industry"
                         },

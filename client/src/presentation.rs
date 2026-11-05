@@ -45,12 +45,12 @@ pub fn equipment_shape_configured(
     let size = size.unwrap_or_default();
     let default_column = ColumnDesign::default();
     let column = column_design.unwrap_or(&default_column);
-    let diameter = if kind == EquipmentKind::Column {
+    let diameter = if kind.is_column() {
         f32::from(column.diameter)
     } else {
         f32::from(size.diameter)
     };
-    let height = if kind == EquipmentKind::Column {
+    let height = if kind.is_column() {
         column.size()[1] as f32
     } else {
         f32::from(size.height)
@@ -62,7 +62,7 @@ pub fn equipment_shape_configured(
         origin: [0; 3],
         axis,
         tank_size: matches!(kind, EquipmentKind::Tank | EquipmentKind::Vessel).then_some(size),
-        column_design: (kind == EquipmentKind::Column).then(|| column.clone()),
+        column_design: kind.is_column().then(|| column.clone()),
         pipe_ends: None,
         contents: vec![],
         internal_energy_j: 0.0,
@@ -75,7 +75,7 @@ pub fn equipment_shape_configured(
     let nozzle_z = game_simulation::equipment::tank_nozzle_z_m(&template);
     let neck = game_simulation::equipment::tank_nozzle_length_m(&template);
     match kind {
-        EquipmentKind::Column => {
+        EquipmentKind::Column | EquipmentKind::RefluxColumn => {
             let centre = diameter / 2.0;
             // Keep the bottom cap off the supporting voxel's top face, including
             // in translucent build previews. Collision remains conservative.
@@ -107,20 +107,58 @@ pub fn equipment_shape_configured(
                 let color = match port.id {
                     0 => [0.65, 0.49, 0.24],
                     1 => [0.40, 0.60, 0.58],
+                    3 => [0.24, 0.54, 0.72],
+                    4 => [0.72, 0.34, 0.22],
                     _ => dark,
                 };
-                let x = if port.normal[0] < 0 {
-                    0.0
+                equipment_nozzle(&mut mesh, port, neck, color);
+            }
+        }
+        EquipmentKind::Condenser | EquipmentKind::Reboiler => {
+            let utility_color = if kind == EquipmentKind::Condenser {
+                [0.24, 0.54, 0.72]
+            } else {
+                [0.72, 0.34, 0.22]
+            };
+            if kind == EquipmentKind::Condenser {
+                mesh.cuboid([0.25, 0.2, 0.25], [2.5, 1.5, 2.5], steel, 0);
+                // Repeated ribs distinguish the condenser's exchanger body.
+                for x in [0.6, 1.0, 1.4, 1.8, 2.2] {
+                    mesh.cuboid([x, 0.25, 0.2], [0.05, 1.45, 2.6], utility_color, 0);
+                }
+            } else {
+                // A horizontal kettle on two saddles with a raised vapour outlet.
+                cylinder(&mut mesh, [0.25, 1.0, 1.5], 0, 2.5, 0.75, steel);
+                mesh.cuboid([0.25, 0.3, 0.25], [2.5, 0.4, 2.5], dark, 0);
+                for x in [0.6, 2.1] {
+                    mesh.cuboid([x, 0.15, 0.6], [0.25, 0.4, 1.8], utility_color, 0);
+                }
+                mesh.cuboid([2.3, 0.7, 0.3], [0.4, 1.1, 0.4], steel, 0);
+            }
+            for port in equipment_ports(&template) {
+                let color = if port.circuit == 1 {
+                    utility_color
                 } else {
-                    diameter - neck
+                    dark
                 };
-                cylinder(
+                equipment_nozzle(&mut mesh, port, 0.3, color);
+            }
+        }
+        EquipmentKind::Tee => {
+            for face in game_simulation::equipment::tee_faces(axis) {
+                let along = usize::from(face / 2);
+                let mut origin = [0.5; 3];
+                if face % 2 == 0 {
+                    origin[along] = 0.0;
+                }
+                cylinder_section(
                     &mut mesh,
-                    [x, port.position[1], nozzle_z],
-                    0,
-                    neck,
+                    origin,
+                    along,
+                    0.5,
                     0.125,
-                    color,
+                    steel,
+                    [face % 2 == 0, face % 2 != 0],
                 );
             }
         }
@@ -289,6 +327,20 @@ pub fn equipment_shape_with_ends(kind: EquipmentKind, axis: u8, ends: Option<[u8
     // extending outside the shared union of the two pipe arms.
     mesh.cuboid([0.38; 3], [0.24; 3], steel, 0);
     mesh
+}
+
+fn equipment_nozzle(
+    mesh: &mut Mesh,
+    port: game_simulation::equipment::EquipmentPort,
+    length: f32,
+    color: [f32; 3],
+) {
+    let axis = port.normal.iter().position(|n| *n != 0).unwrap();
+    let mut origin = port.position;
+    if port.normal[axis] > 0 {
+        origin[axis] -= length;
+    }
+    cylinder(mesh, origin, axis, length, 0.125, color);
 }
 
 fn cylinder(
@@ -741,53 +793,104 @@ mod tests {
 
     #[test]
     fn column_mesh_tracks_trays_feed_and_diameter_inside_shared_collision() {
-        for diameter in 2..=6 {
-            for trays in [2, 12] {
-                for feed_tray in [1, trays] {
-                    let mut design = ColumnDesign {
-                        diameter,
-                        ..Default::default()
-                    };
-                    design.spec.trays = trays;
-                    design.spec.feed_tray = feed_tray;
-                    let device = EquipmentSnapshot {
-                        id: 1,
-                        revision: 0,
-                        kind: EquipmentKind::Column,
-                        origin: [0; 3],
-                        axis: 0,
-                        tank_size: None,
-                        column_design: Some(design.clone()),
-                        pipe_ends: None,
-                        contents: vec![],
-                        internal_energy_j: 0.0,
-                        enabled: false,
-                        opening: 1.0,
-                        pump_reversed: false,
-                        thermal: None,
-                        reading: None,
-                    };
-                    let mesh =
-                        equipment_shape_configured(EquipmentKind::Column, 0, None, Some(&design));
-                    assert!(!mesh.vertices.is_empty());
-                    let boxes = game_simulation::equipment::collision_boxes(&device);
-                    for vertex in &mesh.vertices {
-                        assert!(
-                            boxes.iter().any(|shape| (0..3)
-                                .all(|i| vertex.position[i] >= shape.min[i] - 1e-5
-                                    && vertex.position[i] <= shape.max[i] + 1e-5)),
-                            "{design:?} {:?}",
-                            vertex.position
-                        );
+        for kind in [EquipmentKind::Column, EquipmentKind::RefluxColumn] {
+            for diameter in 2..=6 {
+                for trays in [2, 12] {
+                    for feed_tray in [1, trays] {
+                        let mut design = ColumnDesign {
+                            diameter,
+                            ..Default::default()
+                        };
+                        design.spec.trays = trays;
+                        design.spec.feed_tray = feed_tray;
+                        let device = EquipmentSnapshot {
+                            id: 1,
+                            revision: 0,
+                            kind,
+                            origin: [0; 3],
+                            axis: 0,
+                            tank_size: None,
+                            column_design: Some(design.clone()),
+                            pipe_ends: None,
+                            contents: vec![],
+                            internal_energy_j: 0.0,
+                            enabled: false,
+                            opening: 1.0,
+                            pump_reversed: false,
+                            thermal: None,
+                            reading: None,
+                        };
+                        let mesh = equipment_shape_configured(kind, 0, None, Some(&design));
+                        assert!(!mesh.vertices.is_empty());
+                        let boxes = game_simulation::equipment::collision_boxes(&device);
+                        for vertex in &mesh.vertices {
+                            assert!(
+                                boxes.iter().any(|shape| (0..3)
+                                    .all(|i| vertex.position[i] >= shape.min[i] - 1e-5
+                                        && vertex.position[i] <= shape.max[i] + 1e-5)),
+                                "{design:?} {:?}",
+                                vertex.position
+                            );
+                        }
+                        for port in equipment_ports(&device) {
+                            let along = port.normal.iter().position(|n| *n != 0).unwrap();
+                            assert!(mesh
+                                .vertices
+                                .iter()
+                                .any(|v| (0..3).all(|i| (v.position[i] - port.position[i]).abs()
+                                    <= if i == along { 1e-5 } else { 0.126 })));
+                        }
                     }
-                    for port in equipment_ports(&device) {
-                        assert!(mesh
-                            .vertices
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn reflux_component_meshes_match_collision_and_every_role_port() {
+        for kind in [
+            EquipmentKind::Condenser,
+            EquipmentKind::Reboiler,
+            EquipmentKind::Tee,
+        ] {
+            for axis in 0..kind.axis_count() {
+                let d = EquipmentSnapshot {
+                    id: 1,
+                    revision: 0,
+                    kind,
+                    axis,
+                    origin: [0; 3],
+                    tank_size: None,
+                    column_design: None,
+                    pipe_ends: None,
+                    contents: vec![],
+                    internal_energy_j: 0.0,
+                    enabled: false,
+                    opening: 1.0,
+                    pump_reversed: false,
+                    thermal: None,
+                    reading: None,
+                };
+                let mesh = equipment_shape(kind, axis);
+                let boxes = game_simulation::equipment::collision_boxes(&d);
+                assert!(!mesh.vertices.is_empty());
+                for v in &mesh.vertices {
+                    assert!(
+                        boxes
                             .iter()
-                            .any(|v| (v.position[0] - port.position[0]).abs() < 1e-5
-                                && (v.position[1] - port.position[1]).abs() <= 0.126
-                                && (v.position[2] - port.position[2]).abs() <= 0.126));
-                    }
+                            .any(|b| (0..3).all(|i| v.position[i] >= b.min[i] - 1e-5
+                                && v.position[i] <= b.max[i] + 1e-5)),
+                        "{kind:?} axis={axis} vertex={:?}",
+                        v.position
+                    );
+                }
+                for p in equipment_ports(&d) {
+                    let along = p.normal.iter().position(|n| *n != 0).unwrap();
+                    assert!(mesh
+                        .vertices
+                        .iter()
+                        .any(|v| (0..3).all(|i| (v.position[i] - p.position[i]).abs()
+                            <= if i == along { 1e-5 } else { 0.126 })));
                 }
             }
         }

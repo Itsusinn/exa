@@ -35,6 +35,10 @@ impl ColumnDesign {
 }
 
 pub const COLUMN_ITEM: &str = "蒸馏塔";
+pub const REFLUX_COLUMN_ITEM: &str = "回流蒸馏塔";
+pub const CONDENSER_ITEM: &str = "冷凝器";
+pub const REBOILER_ITEM: &str = "再沸器";
+pub const TEE_ITEM: &str = "回流三通";
 pub const TANK_ITEM: &str = "储罐";
 pub const PIPE_ITEM: &str = "管道";
 pub const PUMP_ITEM: &str = "测试泵";
@@ -86,10 +90,32 @@ pub enum EquipmentKind {
     HeatExchanger,
     PipeRack,
     Column,
+    RefluxColumn,
+    Condenser,
+    Reboiler,
+    Tee,
 }
 impl EquipmentKind {
+    pub fn is_column(self) -> bool {
+        matches!(self, Self::Column | Self::RefluxColumn)
+    }
+    /// Construction-only equipment pauses its connected process group.
+    pub fn is_planning(self) -> bool {
+        self.is_column() || matches!(self, Self::Condenser | Self::Reboiler | Self::Tee)
+    }
+    pub fn axis_count(self) -> u8 {
+        match self {
+            Self::Tee => 12,
+            Self::Pipe | Self::Pump | Self::Valve | Self::PipeRack => 3,
+            _ => 1,
+        }
+    }
     pub fn item_name(self) -> &'static str {
         match self {
+            Self::RefluxColumn => REFLUX_COLUMN_ITEM,
+            Self::Condenser => CONDENSER_ITEM,
+            Self::Reboiler => REBOILER_ITEM,
+            Self::Tee => TEE_ITEM,
             Self::Column => COLUMN_ITEM,
             Self::Tank => TANK_ITEM,
             Self::Pipe => PIPE_ITEM,
@@ -102,6 +128,10 @@ impl EquipmentKind {
     }
     pub fn from_item(name: &str) -> Option<Self> {
         match name {
+            REFLUX_COLUMN_ITEM => Some(Self::RefluxColumn),
+            CONDENSER_ITEM => Some(Self::Condenser),
+            REBOILER_ITEM => Some(Self::Reboiler),
+            TEE_ITEM => Some(Self::Tee),
             COLUMN_ITEM => Some(Self::Column),
             TANK_ITEM => Some(Self::Tank),
             PIPE_ITEM => Some(Self::Pipe),
@@ -115,10 +145,11 @@ impl EquipmentKind {
     }
     pub fn size(self) -> [i32; 3] {
         match self {
-            Self::Column => [2, 8, 2],
+            Self::Column | Self::RefluxColumn => [2, 8, 2],
+            Self::Condenser | Self::Reboiler => [3, 2, 3],
             Self::Tank | Self::Vessel => [2, 3, 2],
             Self::HeatExchanger => [2, 1, 3],
-            Self::Pipe | Self::Pump | Self::Valve | Self::PipeRack => [1; 3],
+            Self::Pipe | Self::Pump | Self::Valve | Self::PipeRack | Self::Tee => [1; 3],
         }
     }
 }
@@ -292,7 +323,7 @@ impl EquipmentSnapshot {
     pub fn size(&self) -> [i32; 3] {
         if matches!(self.kind, EquipmentKind::Tank | EquipmentKind::Vessel) {
             self.tank_size_or_default().size()
-        } else if self.kind == EquipmentKind::Column {
+        } else if self.kind.is_column() {
             self.column_design
                 .as_ref()
                 .map_or([2, 8, 2], ColumnDesign::size)
@@ -305,21 +336,23 @@ impl EquipmentSnapshot {
         self.id != 0
             && self.id <= i64::MAX as u64
             && self.revision <= i64::MAX as u64
-            && self.axis <= 2
+            && self.axis < self.kind.axis_count()
             && self.tank_size.is_none_or(|size| {
                 matches!(self.kind, EquipmentKind::Tank | EquipmentKind::Vessel) && size.valid()
             })
             && match (&self.column_design, self.kind) {
-                (Some(design), EquipmentKind::Column) => {
+                (Some(design), kind) if kind.is_column() => {
                     design.valid()
                         && self.axis == 0
                         && self.contents.is_empty()
                         && self.internal_energy_j == 0.0
                 }
-                (None, kind) => kind != EquipmentKind::Column,
+                (None, kind) => !kind.is_column(),
                 _ => false,
             }
             && (self.kind != EquipmentKind::PipeRack || self.axis != 1)
+            && (!self.kind.is_planning()
+                || (self.contents.is_empty() && self.internal_energy_j == 0.0))
             && match (self.kind, self.pipe_ends) {
                 (EquipmentKind::Pipe, Some([a, b])) => a < b && b < 6,
                 (_, None) => true,
@@ -431,7 +464,7 @@ pub enum EquipmentCommand {
     },
 }
 
-/// Result of checking the four physical lines of an existing heat exchanger.
+/// Result of checking a device's physical construction.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AssemblyStatus {
     Complete,
@@ -442,6 +475,7 @@ pub enum AssemblyStatus {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AssemblyLine {
+    /// Logical inspection line, not necessarily a port on the master device.
     pub port: u8,
     pub tank_id: Option<u64>,
     pub pump_id: Option<u64>,
@@ -466,6 +500,7 @@ impl AssemblyReport {
         let line_count = match self.master_kind {
             EquipmentKind::HeatExchanger => 4,
             EquipmentKind::Column => 3,
+            EquipmentKind::RefluxColumn => 9,
             _ => return false,
         };
         valid_id(self.request_id)
@@ -506,7 +541,7 @@ impl PipeAnchor {
         self.id > 0
             && self.id <= i64::MAX as u64
             && self.revision <= i64::MAX as u64
-            && self.port < 4
+            && self.port < 5
     }
 }
 
@@ -541,6 +576,75 @@ impl PipeRouteReply {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reflux_components_are_bounded_empty_construction_facts() {
+        for kind in [
+            EquipmentKind::RefluxColumn,
+            EquipmentKind::Condenser,
+            EquipmentKind::Reboiler,
+            EquipmentKind::Tee,
+        ] {
+            let mut d = tank();
+            d.kind = kind;
+            d.contents.clear();
+            d.internal_energy_j = 0.0;
+            d.column_design = kind.is_column().then(ColumnDesign::default);
+            assert_eq!(EquipmentKind::from_item(kind.item_name()), Some(kind));
+            for axis in 0..kind.axis_count() {
+                d.axis = axis;
+                assert!(d.valid(), "{kind:?} {axis}");
+                assert_eq!(
+                    rmp_serde::from_slice::<EquipmentSnapshot>(&rmp_serde::to_vec(&d).unwrap())
+                        .unwrap(),
+                    d
+                );
+            }
+            d.axis = kind.axis_count();
+            assert!(!d.valid());
+            d.axis = 0;
+            d.contents = tank().contents;
+            assert!(!d.valid());
+            d.contents.clear();
+            d.internal_energy_j = 1.0;
+            assert!(!d.valid());
+            d.internal_energy_j = 0.0;
+            d.thermal = Some(Default::default());
+            assert!(!d.valid());
+            d.thermal = None;
+            d.origin[1] = crate::WORLD_HEIGHT - d.size()[1];
+            assert!(d.valid());
+            d.origin[1] += 1;
+            assert!(!d.valid());
+        }
+        let anchor = PipeAnchor {
+            id: 1,
+            revision: 0,
+            port: 4,
+        };
+        assert!(anchor.valid());
+        assert!(!PipeAnchor { port: 5, ..anchor }.valid());
+        let mut report = AssemblyReport {
+            request_id: 1,
+            master_id: 1,
+            master_kind: EquipmentKind::RefluxColumn,
+            status: AssemblyStatus::Complete,
+            lines: (0..9)
+                .map(|port| AssemblyLine {
+                    port,
+                    tank_id: None,
+                    pump_id: None,
+                    valve_id: None,
+                    valid: true,
+                    message: String::new(),
+                })
+                .collect(),
+            message: String::new(),
+        };
+        assert!(report.valid());
+        report.lines.pop();
+        assert!(!report.valid());
+    }
 
     #[test]
     fn column_construction_facts_are_bounded_and_roundtrip_without_process_results() {
