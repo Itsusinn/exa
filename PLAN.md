@@ -46,7 +46,9 @@ Windows 导出使用标准模板与纯运行时暂存项目，排除插件、.NE
 
 ## 验证状态与待办
 
-2026-11-05 首次远端发布兼容修复：手动发布运行 `42005206390` 在 Rust 1.99.0 的严格 Clippy 阶段失败；`godot = 0.5.5` 自动初始化生成 `base: base`，触发 [上游已记录的宏误报](https://github.com/godot-rust/gdext/issues/1713)。仅将桥接类的私有 `Base<Node>` 字段改名为 `godot_base`，由同一宏按类型识别；保留初始化、生命周期、协议和玩法行为，不关闭 lint。已用 Rust 1.99.0 通过全 workspace/all-targets 严格 Clippy 和格式检查，日志 `target/ci-clippy-1.99.log`；发布运行仍需重新完成后续测试与导出。
+2026-11-05 首次正式发布完成：[`v0.1.0`](https://github.com/Itsusinn/game/releases/tag/v0.1.0) 对应 `470f129a76a61fd808beca232f7e88bf793b7f10`，[手动运行 `42006610351`](https://github.com/Itsusinn/game/actions/runs/42006610351) 的 build/release 均成功。Windows runner 使用 Rust 1.99.1 和 Godot 4.7.2 标准版；严格检查、234 项 workspace Rust 测试、2 项脚本测试、Godot smoke、908 种工业模型及双客户端 QUIC 检查通过。实际 release 包完成离线启动、连接独立 release 服务端和服务端保存退出检查。已重新下载两个 Release 附件，核对 ZIP 文件清单、BUILD-INFO 的提交与标签；ZIP SHA-256 为 `3c932706c0c46d57a9ba81f8dde7390b1c59d88c38ec7d1927db28660bc86da3`，与清单及 GitHub 资产摘要一致。原始 CI 日志与下载验证附件分别在 `target/ci-v0.1.0-run.log`、`target/release-v0.1.0-verify/`。这次发布未增加 GPU、完整手动键鼠或 DPI/窗口验收证据。
+
+2026-11-05 首次远端发布兼容修复：手动发布运行 `42005206390` 在 Rust 1.99 系列的严格 Clippy 阶段失败；`godot = 0.5.5` 自动初始化生成 `base: base`，触发 [上游已记录的宏误报](https://github.com/godot-rust/gdext/issues/1713)。仅将桥接类的私有 `Base<Node>` 字段改名为 `godot_base`，由同一宏按类型识别；保留初始化、生命周期、协议和玩法行为，不关闭 lint。已用 Rust 1.99.0 通过全 workspace/all-targets 严格 Clippy 和格式检查，日志 `target/ci-clippy-1.99.log`；后续发布验证结果见上条。
 
 2026-11-05 手动发布 CI：新增 `.github/workflows/release.yml`，仅 `workflow_dispatch` 触发。选择分支并填写版本标签，可选预发行/草稿；Windows x64 串行执行 Rust 检查/测试、Godot 场景与联机检查，再导出 release 客户端及独立服务端，打包 ZIP 和 SHA-256 清单。发布任务单独获得写权限，标签绑定实际构建提交，已有 Release 不覆盖。修复运行时暂存遗漏 `godot/assets/`，确保工业 GLB 随包导出。标准发布模板禁用路径/脚本覆盖，因此实际发布包以正常入口验证离线漫游、原生扩展及连接独立服务端，完整场景断言在标准引擎中执行，不加入发布版测试入口。
 
