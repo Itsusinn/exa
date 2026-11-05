@@ -99,9 +99,12 @@ func run() -> void:
 	await create_timer(0.6).timeout
 	scene.bridge.send_chat("/industry kit")
 	if not await expect(func(): return scene.state.inventory_slots.any(func(item): return item.get("name","") == "回流蒸馏塔"),"test kit supplies process construction equipment"): return
+	# Screenshots/background windows may have released OS focus. This scripted
+	# input scenario simulates focus again, as at the start and in inspection.
+	scene._focus_gained()
 	key(KEY_J)
 	scene._process(0.0)
-	check(scene.distillation.opened,"J opens reusable column design")
+	if not await expect(func(): return scene.distillation.opened,"J opens reusable column design"): return
 	scene.distillation._save_design()
 	check(scene.distillation.read_saved_design().has("spec"),"existing schema design saved for reflux column")
 	key(KEY_ESCAPE)

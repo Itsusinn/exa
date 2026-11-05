@@ -176,6 +176,100 @@ impl GameBridge {
             .collect()
     }
 
+    /// Local-space anchors for authored models. No Godot-side collision or port rules.
+    #[func]
+    fn equipment_model_layout(&self, input: VarDictionary) -> VarDictionary {
+        let integer = |key: &str| input.get(key).and_then(|v| v.try_to::<i32>().ok());
+        let Some(kind) = integer("kind").and_then(equipment_kind) else {
+            return VarDictionary::new();
+        };
+        let Some(axis) = integer("axis").and_then(|v| u8::try_from(v).ok()) else {
+            return VarDictionary::new();
+        };
+        if axis >= kind.axis_count() {
+            return VarDictionary::new();
+        }
+        let tank_size = if matches!(
+            kind,
+            protocol::EquipmentKind::Tank | protocol::EquipmentKind::Vessel
+        ) {
+            let Some(diameter) = integer("diameter").and_then(|v| u8::try_from(v).ok()) else {
+                return VarDictionary::new();
+            };
+            let Some(height) = integer("height").and_then(|v| u8::try_from(v).ok()) else {
+                return VarDictionary::new();
+            };
+            let size = protocol::TankSize { diameter, height };
+            if !size.valid() {
+                return VarDictionary::new();
+            }
+            Some(size)
+        } else {
+            None
+        };
+        let column_design = if kind.is_column() {
+            let Some(design) = input
+                .get("column_design")
+                .and_then(|v| v.try_to::<VarDictionary>().ok())
+                .and_then(|v| parse_column_design(&v))
+            else {
+                return VarDictionary::new();
+            };
+            Some(design)
+        } else {
+            None
+        };
+        let mut pipe_ends = None;
+        if kind == protocol::EquipmentKind::Pipe {
+            if let Some(ends) = input
+                .get("pipe_ends")
+                .and_then(|v| v.try_to::<VarArray>().ok())
+            {
+                if !ends.is_empty() {
+                    if ends.len() != 2 {
+                        return VarDictionary::new();
+                    }
+                    let faces: Option<Vec<u8>> = ends
+                        .iter_shared()
+                        .map(|v| v.try_to::<i32>().ok().and_then(|n| u8::try_from(n).ok()))
+                        .collect();
+                    let Some(faces) = faces else {
+                        return VarDictionary::new();
+                    };
+                    if faces[0] >= faces[1] || faces[1] >= 6 {
+                        return VarDictionary::new();
+                    }
+                    pipe_ends = Some([faces[0], faces[1]]);
+                }
+            }
+        }
+        let device = protocol::EquipmentSnapshot {
+            id: 0,
+            revision: 0,
+            kind,
+            origin: [0; 3],
+            axis,
+            tank_size,
+            column_design,
+            pipe_ends,
+            contents: vec![],
+            internal_energy_j: 0.0,
+            enabled: false,
+            opening: 1.0,
+            pump_reversed: false,
+            thermal: None,
+            reading: None,
+        };
+        let mut result = equipment_dictionary(&device);
+        let boxes: VarArray = presentation::equipment_collision_boxes(&device)
+            .iter()
+            .map(|b| vdict! { "min" => vector(b.min), "max" => vector(b.max) }.to_variant())
+            .collect();
+        result.set("collision_boxes", &boxes);
+        result.set("nozzle_length", presentation::tank_nozzle_length_m(&device));
+        result
+    }
+
     #[func]
     #[allow(clippy::too_many_arguments)]
     fn configure_thermal(

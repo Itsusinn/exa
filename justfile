@@ -102,6 +102,14 @@ godot-industry:
 godot-industry-graphics:
     cargo +nightly -Zscript scripts/godot.rs industry-graphics
 
+# 验证 Blender 模型全部规格、端口及共享碰撞边界
+godot-industry-models:
+    cargo +nightly -Zscript scripts/godot.rs industry-models
+
+# 验证模型后输出实际 Forward+ 设备总览截图
+godot-industry-models-graphics:
+    cargo +nightly -Zscript scripts/godot.rs industry-models-graphics
+
 # 验证最小工业回路、控制面板与保存重开
 godot-industry-flow:
     cargo +nightly -Zscript scripts/godot.rs industry-flow

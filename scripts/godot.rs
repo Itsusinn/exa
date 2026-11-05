@@ -32,6 +32,8 @@ const ACTIONS: &[&str] = &[
     "editing",
     "industry",
     "industry-graphics",
+    "industry-models",
+    "industry-models-graphics",
     "industry-flow",
     "industry-flow-graphics",
     "industry-thermal",
@@ -105,6 +107,21 @@ fn execute() -> Result {
             scenario(&godot, &project, "smoke", true)
         }
         "multiplayer" => multiplayer(&repo, &target, &godot),
+        "industry-models" | "industry-models-graphics" => {
+            run(godot
+                .command(&project)?
+                .args(["--headless", "--editor", "--import", "--quit"]))?;
+            scenario(&godot, &project, "industry_models", true)?;
+            if action == "industry-models-graphics" {
+                run(godot.command(&project)?.args([
+                    "--script",
+                    "res://tests/industry_models.gd",
+                    "--",
+                    "--gallery",
+                ]))?;
+            }
+            Ok(())
+        }
         "export-debug" | "export-release" => {
             export(&repo, &target, &godot, action == "export-release")
         }

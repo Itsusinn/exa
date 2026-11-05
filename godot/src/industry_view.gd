@@ -2,6 +2,8 @@ extends Node3D
 ## Presentation only. Geometry, targeting and placement validation come from Rust.
 const Palette = preload("res://src/interface_theme.gd")
 const PumpDirection = preload("res://src/pump_direction.gd")
+const IndustryModels = preload("res://src/industry_models.gd")
+var model_library = IndustryModels.new()
 var nodes: Dictionary = {}
 var arrows: Dictionary = {}
 var arrow_mesh: ArrayMesh
@@ -11,7 +13,6 @@ var records: Dictionary = {}
 var last_revision := -1
 var preview: MeshInstance3D
 var preview_material: StandardMaterial3D
-var metal: StandardMaterial3D
 var panel: PanelContainer
 var panel_close: Button
 var details: Label
@@ -58,10 +59,6 @@ var assembly_display_key := ""
 signal close_requested
 
 func _ready() -> void:
-	metal = StandardMaterial3D.new()
-	metal.vertex_color_use_as_albedo = true
-	metal.metallic = 0.65
-	metal.roughness = 0.38
 	preview_material = StandardMaterial3D.new()
 	preview_material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	preview_material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
@@ -258,12 +255,8 @@ func column_shape_key(design: Dictionary) -> String:
 func shape_mesh(host: Node3D, kind: int, axis: int, pipe_ends: Array = [], diameter: int = 2, height: int = 3, column_design: Dictionary = {}) -> ArrayMesh:
 	var key := "%d:%d:%s:%d:%d:%s" % [kind,axis,str(pipe_ends),diameter,height,column_shape_key(column_design)]
 	if not meshes.has(key):
-		var data: Dictionary = host.bridge.pipe_geometry(axis,pipe_ends[0],pipe_ends[1]) if kind == 1 and pipe_ends.size() == 2 else host.bridge.equipment_geometry(kind,axis)
-		if kind in [0,4]: data = host.bridge.tank_geometry(kind,diameter,height)
-		if kind in [7,8]: data = host.bridge.column_geometry(kind,column_design)
-		var mesh: ArrayMesh = host._mesh(data)
-		if mesh.get_surface_count() > 0: mesh.surface_set_material(0,metal)
-		meshes[key] = mesh
+		var layout: Dictionary = host.bridge.equipment_model_layout({"kind":kind,"axis":axis,"pipe_ends":pipe_ends,"diameter":diameter,"height":height,"column_design":column_design})
+		meshes[key] = model_library.build(layout)
 	return meshes[key]
 
 func update_view(host: Node3D) -> void:
@@ -590,6 +583,7 @@ func clear() -> void:
 	close()
 	for node in nodes.values(): node.queue_free()
 	nodes.clear()
+	meshes.clear()
 	arrows.clear()
 	records.clear()
 	last_revision = -1

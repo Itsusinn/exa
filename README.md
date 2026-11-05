@@ -129,6 +129,8 @@ just demo
 
 ## 材质与视觉检查
 
+化工设备使用 Blender 制作的金属模型，覆盖现有 12 类设备和两口弯管；法兰、螺栓、梯子、表盘、鞍座和分色管路随原有规格拼装。可编辑源文件为 `art/industry/chemical_equipment.blend`，游戏导入 `godot/assets/industry/chemical_equipment.glb`，运行无需 Blender。建造预览和已建设备共用模型，端口/碰撞仍来自 Rust；外观不改变存档、容量或设备功能。模型编辑、导出和校验信息见 [模型维护说明](art/industry/README.md)。`just godot-industry-models` 验证 908 种尺寸/方向组合，`just godot-industry-models-graphics` 另输出实际 Forward+ 总览截图。
+
 材质位于 `godot/materials/textures/`，使用 Poly Haven 的 CC0 1K JPG 颜色、OpenGL 法线和粗糙度贴图。来源、许可及 SHA-256 校验清单见 [素材说明](godot/materials/textures/LICENSE.md) 和 [sources.json](godot/materials/textures/sources.json)。纹理沿世界坐标连续铺设，箱子保留局部纹理和金属扣件。材质通过 Godot 导入，正式导出包含全部资源，不需要联网下载。
 
 沙土、黏土、雪和冰补充使用项目自有 `godot/materials/granular_normal.tres`：固定种子的 512px 无缝颗粒法线，带 mipmap，按材质调整尺度和强度。石材法线强度较高，草叶较低，雪/冰最轻；shader 的 `normal_strength` 默认 1，设为 0 只关闭法线贴图，保留 AO 和倒角。切线基按实际投影推导，归一化仅用极小的退化保护值，避免屏幕导数小时把凹凸压平。`visuals.gd` 输出 `detail-normal-*` 和 `granular-normal-*` 对照并检查像素变化；后者为沙土、黏土、雪、冰的独立材质展示，非世界生成验收。

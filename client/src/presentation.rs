@@ -2,6 +2,9 @@ use crate::mesh::{Mesh, Vertex, NORMALS};
 use game_client_core::voxel::Client3d;
 pub use game_simulation::equipment::ports as equipment_ports;
 pub use game_simulation::equipment::tank_capacity_m3;
+pub use game_simulation::equipment::{
+    collision_boxes as equipment_collision_boxes, tank_nozzle_length_m,
+};
 use protocol::*;
 
 /// Reusable local-space equipment mesh; instances carry their authoritative origin.
