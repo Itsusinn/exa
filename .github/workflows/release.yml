@@ -1,0 +1,298 @@
+name: Build and release Windows game
+run-name: Release ${{ inputs.tag }} from ${{ github.ref_name }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'New release tag (for example v0.1.0 or v0.1.0-rc.1)'
+        required: true
+        type: string
+      prerelease:
+        description: Mark as a pre-release
+        type: boolean
+        default: false
+      draft:
+        description: Keep the release as a draft
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.tag }}
+  cancel-in-progress: false
+
+env:
+  CARGO_BUILD_JOBS: '2'
+  CARGO_TERM_COLOR: always
+  GODOT_VERSION: '4.7.2'
+  RELEASE_TAG: ${{ inputs.tag }}
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Check out the exact requested revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate release tag
+        run: |
+          if ($env:RELEASE_TAG -cnotmatch '^v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?$') {
+            throw 'Use a version tag such as v0.1.0 or v0.1.0-rc.1.'
+          }
+          git show-ref --verify --quiet "refs/tags/$env:RELEASE_TAG"
+          if ($LASTEXITCODE -eq 0) {
+            $commit = git rev-parse "refs/tags/$env:RELEASE_TAG^{}"
+            if ($LASTEXITCODE -ne 0 -or $commit -ne $env:GITHUB_SHA) {
+              throw 'The existing tag points to a different commit. Choose a new tag or the matching revision.'
+            }
+          } elseif ($LASTEXITCODE -ne 1) { throw 'Could not inspect tags.' }
+          exit 0
+
+      - name: Install Rust and just
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+          if ($LASTEXITCODE -ne 0) { throw 'Stable Rust installation failed.' }
+          rustup toolchain install nightly --profile minimal --component rustfmt --component clippy
+          if ($LASTEXITCODE -ne 0) { throw 'Nightly script toolchain installation failed.' }
+          cargo +stable install just --version 1.47.1 --locked --jobs 2
+          if ($LASTEXITCODE -ne 0) { throw 'just installation failed.' }
+
+      - name: Install matching standard Godot editor and Windows templates
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $downloads = Join-Path $env:RUNNER_TEMP 'godot-downloads'
+          New-Item -ItemType Directory -Force $downloads | Out-Null
+          $editor = "Godot_v$env:GODOT_VERSION-stable_win64.exe.zip"
+          $templates = "Godot_v$env:GODOT_VERSION-stable_export_templates.tpz"
+          gh release download "$env:GODOT_VERSION-stable" --repo godotengine/godot-builds --dir $downloads --pattern $editor --pattern $templates --pattern SHA512-SUMS.txt
+          if ($LASTEXITCODE -ne 0) { throw 'Godot download failed.' }
+          $sums = Get-Content (Join-Path $downloads 'SHA512-SUMS.txt')
+          foreach ($name in @($editor, $templates)) {
+            $entry = @($sums | Where-Object { $_ -match ('\s+\*?' + [regex]::Escape($name) + '$') })
+            if ($entry.Count -ne 1) { throw "Missing or ambiguous checksum for $name" }
+            $expected = ($entry[0] -split '\s+')[0]
+            $actual = (Get-FileHash (Join-Path $downloads $name) -Algorithm SHA512).Hash
+            if ($actual -ine $expected) { throw "Checksum mismatch for $name" }
+          }
+          $editorDir = Join-Path $env:RUNNER_TEMP 'godot-editor'
+          Expand-Archive -LiteralPath (Join-Path $downloads $editor) -DestinationPath $editorDir
+          "GODOT_BIN=$editorDir/Godot_v$env:GODOT_VERSION-stable_win64.exe" >> $env:GITHUB_ENV
+          $templateDir = Join-Path $env:APPDATA "Godot/export_templates/$env:GODOT_VERSION.stable"
+          New-Item -ItemType Directory -Force $templateDir | Out-Null
+          $archive = [System.IO.Compression.ZipFile]::OpenRead((Join-Path $downloads $templates))
+          try {
+            foreach ($name in @('windows_debug_x86_64.exe', 'windows_release_x86_64.exe')) {
+              $entry = $archive.GetEntry("templates/$name")
+              if ($null -eq $entry) { throw "Missing template: $name" }
+              [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, (Join-Path $templateDir $name))
+            }
+          } finally { $archive.Dispose() }
+
+      - name: Verify locked workspace dependencies
+        run: cargo +stable fetch --locked
+
+      - name: Check formatting and strict Clippy
+        run: just check
+
+      - name: Run Rust tests including real QUIC integration
+        run: just test
+
+      - name: Test build and export helpers
+        run: just scripts-test
+
+      - name: Test Godot scenes, single-player and industrial models
+        timeout-minutes: 10
+        run: |
+          just godot-smoke
+          if ($LASTEXITCODE -ne 0) { throw 'Godot scene checks failed.' }
+          just godot-industry-models
+          if ($LASTEXITCODE -ne 0) { throw 'Industrial model checks failed.' }
+          just godot-multiplayer
+          if ($LASTEXITCODE -ne 0) { throw 'Godot multiplayer checks failed.' }
+
+      - name: Build standalone release server
+        run: cargo +stable build --locked --release -p server --jobs 2
+
+      - name: Export release client with its native extension
+        run: just export-release
+
+      - name: Verify builds did not change the workspace lockfile
+        run: git diff --exit-code -- Cargo.lock
+
+      - name: Test the exported client and release server
+        timeout-minutes: 10
+        run: |
+          $output = Join-Path $env:GITHUB_WORKSPACE 'target/export-release'
+          $evidence = Join-Path $env:GITHUB_WORKSPACE 'target/release-checks'
+          New-Item -ItemType Directory -Force $evidence | Out-Null
+          foreach ($file in @('Dungeon.exe', 'Dungeon.pck', 'game_godot.dll')) {
+            if (!(Test-Path -LiteralPath "$output/$file" -PathType Leaf)) { throw "Missing runtime file: $file" }
+          }
+          $exportedHash = (Get-FileHash "$output/game_godot.dll").Hash
+          if ($exportedHash -ne (Get-FileHash 'target/release/game_godot.dll').Hash) {
+            throw 'Exported DLL does not match the release build.'
+          }
+          $env:CDDA_IDENTITY_PATH = "$evidence/release-client.uuid"
+          function Test-Export([string]$scenario, [string[]]$gameArgs) {
+            # Standard release templates forbid --path/--script overrides. Use the shipped entry point.
+            $arguments = @('--headless', '--max-fps', '60', '--quit-after', '600', '--') + $gameArgs
+            $process = Start-Process -FilePath "$output/Dungeon.exe" -WorkingDirectory $output -WindowStyle Hidden -PassThru -ArgumentList $arguments -RedirectStandardOutput "$evidence/$scenario.out.log" -RedirectStandardError "$evidence/$scenario.err.log"
+            if (!$process.WaitForExit(60000)) {
+              $process.Kill()
+              $process.WaitForExit()
+              throw "Exported $scenario test timed out."
+            }
+            $process.WaitForExit()
+            $stdout = Get-Content "$evidence/$scenario.out.log" -Raw
+            $stderr = Get-Content "$evidence/$scenario.err.log" -Raw
+            Write-Output $stdout
+            Write-Output $stderr
+            if ($process.ExitCode -ne 0 -or $stdout -notmatch 'Initialize godot-rust' -or "$stdout`n$stderr" -match '(?m)^(SCRIPT ERROR:|ERROR:)') {
+              throw "Exported $scenario test failed."
+            }
+          }
+          Test-Export 'demo' @('--demo')
+          $env:CDDA_BIND = '127.0.0.1:19876'
+          $env:CDDA_TEST_ADDRESS = $env:CDDA_BIND
+          $env:CDDA_SAVE_PATH = "$evidence/world3d.bin"
+          $env:CDDA_CERT_PATH = "$evidence/server.cert.der"
+          $env:CDDA_RUN_SECONDS = '240'
+          $env:CDDA_SHUTDOWN_ON_STDIN_CLOSE = '1'
+          $env:RUST_LOG = 'server=info'
+          $startInfo = [System.Diagnostics.ProcessStartInfo]::new("$env:GITHUB_WORKSPACE/target/release/server.exe")
+          $startInfo.WorkingDirectory = $evidence
+          $startInfo.UseShellExecute = $false
+          $startInfo.CreateNoWindow = $true
+          $startInfo.RedirectStandardInput = $true
+          $startInfo.RedirectStandardOutput = $true
+          $startInfo.RedirectStandardError = $true
+          $server = [System.Diagnostics.Process]::Start($startInfo)
+          $serverOut = $server.StandardOutput.ReadToEndAsync()
+          $serverErr = $server.StandardError.ReadToEndAsync()
+          try {
+            $deadline = (Get-Date).AddSeconds(30)
+            while (!(Test-Path -LiteralPath $env:CDDA_CERT_PATH)) {
+              if ($server.HasExited -or (Get-Date) -gt $deadline) { throw 'Release server did not become ready.' }
+              Start-Sleep -Milliseconds 100
+            }
+            Test-Export 'multiplayer' @('--connect', '--server', $env:CDDA_TEST_ADDRESS, '--name', 'ReleaseCheck', '--cert', "`"$env:CDDA_CERT_PATH`"")
+            $server.StandardInput.Close()
+            if (!$server.WaitForExit(30000)) { throw 'Release server did not shut down.' }
+            $server.WaitForExit()
+            if ($server.ExitCode -ne 0 -or !(Test-Path -LiteralPath $env:CDDA_SAVE_PATH)) {
+              throw 'Release server failed to save and exit.'
+            }
+            if ($serverOut.Result -notmatch 'Player logged in' -or $serverOut.Result -notmatch 'ReleaseCheck') {
+              throw 'Exported client did not log in to the release server.'
+            }
+          } finally {
+            if (!$server.HasExited) { $server.Kill(); $server.WaitForExit() }
+            $serverOut.Result | Set-Content "$evidence/server.out.log"
+            $serverErr.Result | Set-Content "$evidence/server.err.log"
+          }
+
+      - name: Package client, server and checksums
+        run: |
+          $stage = Join-Path $env:RUNNER_TEMP "Dungeon-$env:RELEASE_TAG-windows-x86_64"
+          New-Item -ItemType Directory -Force $stage, 'target/release-assets' | Out-Null
+          # Explicit file list prevents bundling saves, certificates, logs or editor tools.
+          Copy-Item 'target/export-release/Dungeon.exe', 'target/export-release/Dungeon.pck', 'target/export-release/game_godot.dll', 'target/release/server.exe', 'README.md' -Destination $stage
+          New-Item -ItemType Directory "$stage/licenses" | Out-Null
+          Copy-Item 'godot/materials/textures/LICENSE.md' "$stage/licenses/textures.md"
+          Copy-Item 'godot/materials/textures/sources.json' "$stage/licenses/texture-sources.json"
+          Copy-Item 'server/assets/thermo/LICENSE-IChemE' "$stage/licenses/LICENSE-IChemE"
+          @(
+            "Tag: $env:RELEASE_TAG"
+            "Commit: $env:GITHUB_SHA"
+            "Godot: $env:GODOT_VERSION (standard Windows x86_64)"
+            "Rust: $(rustc +stable --version)"
+            "Workflow: $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+            ''
+            'Extract the entire ZIP, then run Dungeon.exe. Single-player includes its own server.'
+            'For multiplayer hosting, run server.exe; see README.md for bind address and TLS certificate settings.'
+            'Automated headless checks do not verify GPU rendering or manual keyboard/window behavior.'
+            'Godot engine license and third-party notices: https://godotengine.org/license/'
+          ) | Set-Content "$stage/BUILD-INFO.txt" -Encoding utf8
+          $zip = "target/release-assets/Dungeon-$env:RELEASE_TAG-windows-x86_64.zip"
+          Compress-Archive -Path $stage -DestinationPath $zip
+          $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $(Split-Path $zip -Leaf)" | Set-Content 'target/release-assets/SHA256SUMS.txt' -Encoding ascii
+
+      - name: Upload release assets
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows-release
+          path: target/release-assets/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+      - name: Upload validation logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-check-logs
+          path: target/release-checks/*.log
+          if-no-files-found: ignore
+          retention-days: 14
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Check out the built revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Download verified release assets
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: windows-release
+          path: release-assets
+
+      - name: Create tag and GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_DRAFT: ${{ inputs.draft }}
+          RELEASE_PRERELEASE: ${{ inputs.prerelease }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd release-assets
+          sha256sum --check SHA256SUMS.txt
+          if git show-ref --verify --quiet "refs/tags/$RELEASE_TAG"; then
+            test "$(git rev-parse "refs/tags/$RELEASE_TAG^{}")" = "$GITHUB_SHA"
+          else
+            gh api "repos/$GH_REPO/git/refs" -f "ref=refs/tags/$RELEASE_TAG" -f "sha=$GITHUB_SHA"
+          fi
+          # gh refuses existing releases; never overwrite an earlier release or its assets.
+          flags=()
+          if [[ "$RELEASE_DRAFT" == true ]]; then flags+=(--draft); fi
+          if [[ "$RELEASE_PRERELEASE" == true ]]; then flags+=(--prerelease); fi
+          printf '%s\n' \
+            'Windows x86_64 release client and standalone Rust server.' \
+            'Extract the entire ZIP and start Dungeon.exe; server.exe is optional for multiplayer hosting.' \
+            "Built commit: $GITHUB_SHA" \
+            'Includes SHA-256 checksums. Automated headless checks passed; GPU and manual input acceptance remain separate.' > "$RUNNER_TEMP/release-notes.md"
+          gh release create "$RELEASE_TAG" "Dungeon-$RELEASE_TAG-windows-x86_64.zip" SHA256SUMS.txt \
+            --verify-tag --title "Dungeon 3D $RELEASE_TAG" --generate-notes \
+            --notes-file "$RUNNER_TEMP/release-notes.md" "${flags[@]}"

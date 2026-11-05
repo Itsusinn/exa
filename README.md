@@ -427,6 +427,18 @@ Windows 的 just 配方已配置 PowerShell。GPU 截图需要实际图形会话
 
 导出需安装 Godot 4.7.2 **标准版** Windows x86_64 模板到 `%APPDATA%/Godot/export_templates/4.7.2.stable/`。脚本将模板暂存至 `target/godot-templates/`，从运行时源文件创建独立 `target/godot-export-stage-*/` 项目，并移除其中的编辑器插件和 .NET 配置，再导出不依赖 .NET 的客户端。产物分别位于 Cargo target 目录的 `export-debug/` 和 `export-release/`，发布需一起携带 `Dungeon.exe`、`Dungeon.pck`、`game_godot.dll`，不得混用 debug/release DLL。`just editor` 打开仓库内正式项目。修改 DLL 或运行会导入同一项目的检查前，关闭现有项目编辑器，避免 Windows DLL 占用。
 
+### 手动构建与 GitHub Release
+
+[Windows 发布工作流](.github/workflows/release.yml) 仅使用 `workflow_dispatch`，不会因提交、PR 或推送标签自动运行。工作流合入默认分支后，在 GitHub **Actions → Build and release Windows game → Run workflow** 选择要构建的分支，填写 `tag`（如 `v0.1.0`、`v0.1.0-rc.1`）。`prerelease` 标记预发行，`draft` 保留为草稿，默认均关闭；构建成功后默认直接发布 Release。[GitHub 手动触发说明](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#onworkflow_dispatch)
+
+流程在 Windows x64 上安装仓库指定的 stable Rust、脚本使用的 nightly 和固定 Godot 4.7.2 标准版，按官方 SHA-512 清单校验编辑器与导出模板。串行执行 `just check`、`just test`、`just scripts-test`，以及 Godot smoke、908 种工业模型和双客户端 QUIC 检查，以两个构建任务编译 release 服务端并导出客户端；不运行 WASM 检查。导出资源包含 `godot/assets/` 下的工业模型。实际发布包通过正常入口验证原生扩展加载、离线漫游、连接独立 release 服务端及服务端保存退出；单人启停/保存和完整联机行为由前面的 Godot 场景测试覆盖。标准 release 模板禁止 `--path` / `--script` 覆盖，不改变该限制，也不把测试脚本打进游戏。这些 headless 检查不代表 GPU、完整手动键鼠或窗口验收完成。
+
+Release 附件为 `Dungeon-<tag>-windows-x86_64.zip` 和 `SHA256SUMS.txt`。ZIP 内含 `Dungeon.exe`、`Dungeon.pck`、匹配的 `game_godot.dll`、可选独立服务端 `server.exe`、说明和素材许可；完整解压后运行 `Dungeon.exe`，单人游戏无需另启服务端或安装 Godot/.NET。`BUILD-INFO.txt` 记录实际提交、工具版本和构建链接。存档、证书、日志、编辑器插件及 MCP 工具不打包。构建附件和检查日志还会在 Actions 保留 14 天。
+
+标签始终指向本次选择并构建的准确提交：不存在时在发布阶段创建，已存在但指向其他提交则失败。已有 Release 不覆盖；重发请用新标签；若上传失败留下草稿，先检查并处理该草稿再重试。相同标签的运行串行执行。只有发布任务获得 `contents: write`，使用 GitHub 自带的 `GITHUB_TOKEN`，无需额外配置个人令牌；仓库规则仍须允许创建标签和 Release。[GitHub CLI 发布行为](https://cli.github.com/manual/gh_release_create)
+
+### 可选 Godot MCP 工具
+
 Godot MCP 是可选编辑器工具，已接入本仓库 `godot/`，本地端点为 `http://localhost:17860/mcp`。依赖 Godot 4.7.2 .NET、.NET SDK 8 与 `godot-cli@0.33.0`。`Dungeon.Editor.csproj` 仅编译编辑器插件，游戏仍使用 Rust/GDScript；插件源码和生成的代理技能被 Git 忽略。首次运行先 `just build`，再执行 `cargo +nightly -Zscript scripts/godot-mcp.rs` 安装固定版本插件、构建并启动无窗口编辑器。已打开时先用 `godot-cli close godot --owned-only` 关闭，再更新 DLL 或插件程序集。
 
 操作前通过 MCP 查询 `editor | select projectPath, editedScene`，必须指向本仓库，不能把 `GodotMcpSandbox` 当验收项目。修改后用 `editor | call SaveScene()` 保存。2026-10-27 已通过 MCP 给主场景写入职责说明、保存并回读，主脚本验证无错误。导出排除插件、C#、测试、代理技能和工具配置；运行游戏无需 MCP 服务或编辑器。安装阶段的旧开始菜单快捷方式仍指向沙盒，应使用本仓库脚本启动正式项目。

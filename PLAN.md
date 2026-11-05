@@ -46,6 +46,10 @@ Windows 导出使用标准模板与纯运行时暂存项目，排除插件、.NE
 
 ## 验证状态与待办
 
+2026-11-05 手动发布 CI：新增 `.github/workflows/release.yml`，仅 `workflow_dispatch` 触发。选择分支并填写版本标签，可选预发行/草稿；Windows x64 串行执行 Rust 检查/测试、Godot 场景与联机检查，再导出 release 客户端及独立服务端，打包 ZIP 和 SHA-256 清单。发布任务单独获得写权限，标签绑定实际构建提交，已有 Release 不覆盖。修复运行时暂存遗漏 `godot/assets/`，确保工业 GLB 随包导出。标准发布模板禁用路径/脚本覆盖，因此实际发布包以正常入口验证离线漫游、原生扩展及连接独立服务端，完整场景断言在标准引擎中执行，不加入发布版测试入口。
+
+本地验证：actionlint、工作流 PowerShell 语法、`just scripts-check` 和两项脚本测试通过；隔离源码副本完成 release 导出、独立服务端构建、工作流中的发布包运行检查及 ZIP 打包检查。Godot smoke（含单人启停/保存）、908 种工业模型和双客户端 QUIC 场景通过，双客户端检查使用本次 release 服务端。用户原有 debug 服务端和游戏仍在运行，未关闭或替换其可执行文件/DLL；本地直接启动隔离 release 服务端执行联机场景，未把被占用导致无法重新链接的 `just godot-multiplayer` 入口记为通过。证据为 `target/ci-{export-release,server-build,runtime-checks-final,godot-smoke,godot-industry-models}.log`、`target/ci-godot-network/` 和 `target/ci-release-source/target/release-checks/`。本轮未修改游戏 Rust 逻辑，未重跑全量 workspace 测试；CI 配置保留全量检查和测试作为发布门槛。尚未提交、推送或在 GitHub 执行该工作流，也未创建远端 Release；未新增 GPU/完整手动输入验收。
+
 2026-11-05 Blender 化工模型替换：使用本机 Blender 5.2.3 LTS 制作 15 个原创组件，替换现有 12 类工业设备的世界模型与建造预览。钢制筒体/碟形封头、法兰螺栓、梯段、静态表盘、板式换热器、卧式冷凝/再沸器及泵阀/管架保留在 `art/industry/chemical_equipment.blend`；运行资源为 `godot/assets/industry/chemical_equipment.glb`，无新增第三方资产或运行时 Blender 依赖。通过 `equipment_model_layout` 读取共享 Rust 端口、规格与碰撞，Godot 只拼装外观并按材质合并/按形状缓存；改变读数继续复用网格，退出会话清缓存。已修正检查发现的管架横梁 2 毫米越界、端盖共面闪烁及筒体硬边法线问题。设备物料、容量、过程算法、碰撞、协议 18 和世界/工业归档版本均未变。
 
 验证：`just check`（含 Cargo script 严格检查）、客户端 25 项 Rust 单元测试、脚本 2 项测试及 Godot smoke 通过；新增 `just godot-industry-models` 对最终 GLB 的 **908** 种规格/姿态检查通过，涵盖全部罐径/罐高、两类塔每个板数/进料板、15 组管接头、12 姿态三通及泵阀/管架，逐顶点检查共享碰撞包络、端口端点和材料。实际 Forward+ / RX 7900 XTX 已渲染总览 `target/blender-models-gallery.png`，并运行原有蒸馏回路、泵阀回路图形验收，覆盖设备建造/预览、九线检查、泵启停/反向及箭头、阀门开度、读数更新复用节点、拆除、保存重开。结果和截图目录见 `target/blender-{models-final,gallery,loop,flow,smoke,check,client-tests,scripts-tests}.log`；均使用 target 隔离世界。维护说明与源文件校验见 `art/industry/README.md`。

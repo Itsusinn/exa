@@ -339,6 +339,7 @@ fn export(repo: &Path, target: &Path, godot: &Godot, release: bool) -> Result {
         "game.gdextension.uid",
         "export_presets.cfg",
         "bin",
+        "assets",
         "materials",
         "scenes",
         "src",
