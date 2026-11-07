@@ -52,12 +52,18 @@ Windows 导出使用标准模板与纯运行时暂存项目，排除插件、.NE
 
 | 阶段 | 工作与验收 |
 | --- | --- |
-| 1：材质基础（本轮） | Blender Principled 金属/绝缘体/涂层校准，同步源与 GLB；修复涂层导入和端口颜色空间；有机表面去重复、连续多尺度变化、冰雪 IOR；同机位窗口截图和导入材质检查。 |
-| 2：光照与反射（待实施） | 在晴天、阴影、室内和金属设备场景校准日光/天空/SDFGI，评估局部反射与高光压缩；先用固定曝光对照，确认色调映射取舍，再调整默认画面；记录 GPU 帧耗时与反射失效情况。 |
+| 1：材质基础（已提交） | Blender Principled 金属/绝缘体/涂层校准，同步源与 GLB；修复涂层导入和端口颜色空间；有机表面去重复、连续多尺度变化、冰雪 IOR；同机位窗口截图和导入材质检查。提交 `b422301` 已推送 `main`。 |
+| 2：光照与反射（本轮已实现） | 在晴天、阴影、室内和金属设备场景校准日光/天空/SDFGI，加入有界 SSR 与天空反射回退；保留 ACES/固定曝光，记录实际 viewport GPU 渲染耗时与屏外反射限制。 |
 | 3：环境与资产细节（待实施） | 石材/木材/金属微表面、合理纹理尺度、接缝与磨损、植被表现和远景层次；新增素材保留许可/校验，模型与碰撞继续遵循既定边界，植被密度或几何风格等明显取舍另行确认。 |
 | 4：性能与交付（待实施） | 按实测 GPU/显存预算形成画质分档，覆盖移动闪烁、两客户端、长时探索、分辨率/DPI，复验 Windows debug/release 导出；静态截图不能替代这些验收。 |
 
 第一阶段实现与 Blender/Godot 差异记录见 README 和 `art/industry/README.md`；没有改动存档、协议、世界事实或碰撞。以下历史记录保留各自当时的验证范围。
+
+第二阶段（2026-11-07）：按用户要求先提交推送第一阶段，再由三个子 agent 分别实现光照、编写图形验收、独立审查，主 agent 整合和实机验证。`WorldLighting.apply()` 只在场景创建或测试显式切换时应用，保留用户 SDFGI 开关、ACES/曝光 1 与原太阳方向/阴影覆盖。增强档太阳能量 1.10、角直径 0.8°、天空太阳晕范围 8°、天空曲线 0.25、SDFGI 回弹 0.40、SSAO 强度 0.50；雾密度不变，天空雾影响降至 0.25，恢复天空梯度。Sky 使用 Quality/256 辐照缓存，基线保留 Automatic；不在逐帧循环创建资源。SSR 使用引擎半分辨率设置、48 步、0.2 米深度容差；GI 关闭时仍有天空反射回退，不新增反射探针、SSIL、自动曝光或体积雾。阴影中材质仍可辨识，金属下部可见地面反射细节；SSR 不拥有屏外/遮挡/透明表面信息，SDFGI 静态设备建拆的刷新延迟仍存在。
+
+验证：`just check`、236 项 `just test`、`just godot-lighting`、`just godot-smoke`、`just godot-column-loop-graphics` 通过。最终专项证据 `target/lighting-phase2-final/`，日志 `target/lighting-phase2-{final,smoke,loop,rust-tests}.log`；实际设备建造、九线接管、检查、拆除及保存重开证据 `target/godot-column-loop-618075/`。专项测试固定 1280×800、MSAA 4×、ACES/曝光 1，在 RX 7900 XTX 上使用正式离线地形和真实工业模型标靶，停止游戏处理后每视角预热 96 帧、采样 64 帧；检查了室外、阴影、檐下、金属、GI 关闭及 72 帧镜头旋转的采样截图。所有 GPU 计时样本有效，SSR 单独关闭/开启的 viewport GPU 中位数为 1.087/1.263 ms（+0.176 ms），P95 为 1.120/1.298 ms；这不是整游戏帧时间、长时移动或其他 GPU 的性能保证。资源存在和像素差异断言之外，主 agent 与独立审查 agent 均实际查看了反射与暗部截图。
+
+第二阶段 debug 导出重新导入/打包成功，关闭编辑器后独立正常入口离线运行、截图并以退出码 0 结束，日志 `target/lighting-phase2-export-runtime.log` 无错误，截图 `target/lighting-phase2-export.png`。未复验 release、导出联机、长时探索、完整手动键鼠/DPI；未写真实存档或用户设置。本阶段改动留在工作区，尚未提交推送；第一阶段远端提交为 `b4223013b3cdc01d9e02e7d5bf3292b261697c01`。
 
 第一阶段验收：`just check`、`just test`、`just godot-smoke`、`just godot-visuals`、`just godot-industry-models-graphics`、`just godot-column-loop-graphics` 通过。实际 Forward+ / RX 7900 XTX 窗口检查了有机表面去重复、法线/AO/AA、设备总览与九线实体回路；908 种规格/方向保持共享碰撞边界，真实 QUIC 和保存重开通过。Blender 5.2.3 EEVEE/AgX 参考球为 `target/realism-phase1-blender.png`；游戏改前/改后为 `target/realism-phase1-before/`、`target/realism-phase1-after/`，设备总览为 `target/blender-models-gallery.png`，实际回路为 `target/godot-column-loop-614626/`。同机位 120 帧去重复关闭/开启的帧间隔中位数为 8.362/8.364 ms，P95 为 8.471/8.498 ms；受垂直同步限制，不能据此宣称 GPU 成本不变。
 

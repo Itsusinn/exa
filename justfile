@@ -86,6 +86,10 @@ godot-smoke:
 godot-visuals:
     cargo +nightly -Zscript scripts/godot.rs visuals
 
+# 固定曝光下检查室内外光照、金属反射及渲染耗时
+godot-lighting:
+    cargo +nightly -Zscript scripts/godot.rs lighting
+
 # 使用隔离服务端检查两个 Godot 桥接实例联机
 godot-multiplayer:
     cargo +nightly -Zscript scripts/godot.rs multiplayer

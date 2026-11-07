@@ -4,6 +4,7 @@ const HudScript = preload("res://src/hud.gd")
 const IndustryView = preload("res://src/industry_view.gd")
 const DistillationView = preload("res://src/distillation_view.gd")
 const MaterialShader = preload("res://materials/voxel.gdshader")
+const WorldLighting = preload("res://src/world_lighting.gd")
 var bridge: GameBridge
 var camera: Camera3D
 var hud: CanvasLayer
@@ -149,45 +150,10 @@ func _setup_world() -> void:
 	add_child(camera)
 	sun = DirectionalLight3D.new()
 	sun.name = "Sun"
-	sun.rotation_degrees = Vector3(-38,-35,0)
-	sun.light_color = Color(1.0,0.975,0.92)
-	sun.light_energy = 1.0
-	sun.light_angular_distance = 1.2
-	sun.shadow_enabled = true
-	sun.directional_shadow_max_distance = 100
-	sun.directional_shadow_mode = DirectionalLight3D.SHADOW_PARALLEL_4_SPLITS
-	sun.directional_shadow_blend_splits = true
-	sun.directional_shadow_split_1 = 0.1
-	sun.directional_shadow_split_2 = 0.25
-	sun.directional_shadow_split_3 = 0.5
-	sun.shadow_bias = 0.03
-	sun.shadow_normal_bias = 0.5
 	add_child(sun)
 	environment = Environment.new()
-	environment.background_mode = Environment.BG_SKY
-	var sky := Sky.new()
-	var sky_material := ProceduralSkyMaterial.new()
-	sky_material.sky_top_color = Color("7896b3")
-	sky_material.sky_horizon_color = Color("bfcbd1")
-	sky_material.ground_horizon_color = Color("bfcbd1")
-	sky_material.ground_bottom_color = Color("424b39")
-	sky.sky_material = sky_material
-	environment.sky = sky
-	environment.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
-	environment.ambient_light_energy = 0.3
-	environment.tonemap_mode = Environment.TONE_MAPPER_ACES
 	environment.sdfgi_enabled = true
-	environment.sdfgi_min_cell_size = 0.35
-	environment.sdfgi_cascades = 4
-	environment.sdfgi_use_occlusion = true
-	environment.sdfgi_bounce_feedback = 0.3
-	environment.ssao_enabled = true
-	# Vertex AO supplies block contacts; SSAO adds small dynamic-object contacts.
-	environment.ssao_radius = 0.45
-	environment.ssao_intensity = 0.65
-	environment.fog_enabled = true
-	environment.fog_light_color = Color("bfcbd1")
-	environment.fog_density = 0.0015
+	WorldLighting.apply(environment,sun)
 	var world := WorldEnvironment.new()
 	world.environment = environment
 	add_child(world)

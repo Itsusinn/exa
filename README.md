@@ -45,6 +45,10 @@ just dev
 
 `just godot-visuals` 使用离线演示和实际图形窗口生成对照，默认输出 `target/visual-review/`，可通过 `EXA_VISUAL_PATH` 指定目录。包含同机位去重复开关、法线/AO/边缘处理、五档 AA、移动画面和 UI 截图；`organic-frame-times.json` 记录静态视角的 120 帧中位数/P95，是含垂直同步和调度的帧间隔，不能当作 GPU 成本或长期探索基准。测试不保存用户画质设置、不打开真实存档。分阶段路线与验收状态见 [PLAN.md](PLAN.md)。
 
+写实第二阶段将光照集中在 `godot/src/world_lighting.gd`，保留 ACES、固定曝光和玩家的 SDFGI 开关。太阳、天空、间接光和接触遮蔽共同校准；使用屏幕空间反射（SSR）补充可见物体在金属表面的映像，天空反射保留作为回退。SSR 只拥有当前屏幕内的不透明深度，屏外物体、被遮挡面和透明预览不会得到完整反射；不代表路径追踪或完整动态反射。SDFGI 对静态几何变更的刷新限制仍存在，设备建拆不创建持续重绘的独立反射探针。原理与限制见 [Godot 环境与后处理](https://docs.godotengine.org/en/stable/tutorials/3d/environment_and_post_processing.html) 和 [SDFGI](https://docs.godotengine.org/en/stable/tutorials/3d/global_illumination/using_sdfgi.html)。
+
+`just godot-lighting` 在实际 Forward+ 窗口运行第二阶段专项对照；使用固定相机/曝光/AA 比较第一阶段基线和增强光照，覆盖室内外、阴影、工业金属、镜头移动与反射回退。默认证据目录为 `target/lighting-review/`，也可通过 `EXA_VISUAL_PATH` 指定。测试独立记录 Godot viewport 的 CPU/GPU 渲染时间，计时不可用时明确标记；渲染时间不等于含网络、世界生成和显示调度的整帧成本。
+
 ```sh
 just demo
 ```

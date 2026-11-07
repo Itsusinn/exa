@@ -26,6 +26,7 @@ const ACTIONS: &[&str] = &[
     "editor",
     "smoke",
     "visuals",
+    "lighting",
     "export-debug",
     "export-release",
     "multiplayer",
@@ -108,11 +109,11 @@ fn execute() -> Result {
             scenario(&godot, &project, "smoke", true)
         }
         "multiplayer" => multiplayer(&repo, &target, &godot),
-        "visuals" => {
+        "visuals" | "lighting" => {
             run(godot
                 .command(&project)?
                 .args(["--headless", "--editor", "--import", "--quit"]))?;
-            scenario(&godot, &project, "visuals", false)
+            scenario(&godot, &project, action, false)
         }
         "industry-models" | "industry-models-graphics" => {
             run(godot
