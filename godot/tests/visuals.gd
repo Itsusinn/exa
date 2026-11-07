@@ -31,6 +31,7 @@ func run() -> void:
 	for i in range(90): await process_frame
 	scene.hud.visible = false
 	await snapshot("background.png")
+	await organic_comparison()
 	# Same camera, geometry, sky and exposure. Disable SSAO in both captures to
 	# isolate neighbor-sampled contact AO from screen-space occlusion.
 	var ssao_enabled: bool = scene.environment.ssao_enabled
@@ -93,6 +94,37 @@ func run() -> void:
 	scene.queue_free()
 	await process_frame
 	quit(1 if visual_failed else 0)
+
+func organic_comparison() -> void:
+	var original: Transform3D = scene.camera.transform
+	scene.set_process(false)
+	scene.camera.position = Vector3(20.5,11.0,35.0)
+	scene.camera.look_at(Vector3(20.5,7.0,24.0))
+	var timings := {}
+	for enabled in [false,true]:
+		scene.material.set_shader_parameter("organic_detiling",enabled)
+		for i in range(90): await process_frame
+		var label := "on" if enabled else "off"
+		await snapshot("organic-detiling-"+label+".png")
+		var samples: Array[float] = []
+		var previous := Time.get_ticks_usec()
+		for i in range(120):
+			await process_frame
+			var now := Time.get_ticks_usec()
+			samples.append(float(now-previous)/1000.0)
+			previous = now
+		samples.sort()
+		timings[label] = {"frame_ms_p50":samples[60],"frame_ms_p95":samples[114]}
+	check_normal_difference("organic-detiling")
+	# Wall frame intervals include presentation/scheduling; these are not GPU timings.
+	var report := FileAccess.open(output.path_join("organic-frame-times.json"),FileAccess.WRITE)
+	if report == null:
+		visual_failed = true
+		push_error("Cannot write organic frame timings")
+	else:
+		report.store_string(JSON.stringify(timings,"  "))
+	scene.camera.transform = original
+	scene.set_process(true)
 
 func normal_gallery() -> void:
 	# Rendering fixture for material branches absent from the offline demo.

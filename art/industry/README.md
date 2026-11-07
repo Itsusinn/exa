@@ -11,7 +11,7 @@
 ## 编辑与导出
 
 1. 在 Blender 打开源文件，切换到 `Chemical Equipment Library` 场景。保留组件名称、原点、材质和单位；不要导出展示场景或默认启动场景。
-2. 修改后全选该库场景的网格，导出 glTF 2.0，格式选择 **GLB**，启用 **Selected Objects / Apply Modifiers / +Y Up**，导出到上述游戏资源路径。模型已三角化；硬边已拆分，圆柱侧面和封头保留平滑法线。不要导出相机、灯光或动画。
+2. 修改后全选该库场景的网格，导出 glTF 2.0，格式选择 **GLB**，启用 **Selected Objects / Active Scene / Apply Modifiers / +Y Up**，导出到上述游戏资源路径。必须限定当前场景，避免其他场景的选中物体混入。模型已三角化；硬边已拆分，圆柱侧面和封头保留平滑法线。不要导出相机、灯光或动画。
 3. 保留 `.glb.import` 的稳定 UID，运行 `just godot-industry-models-graphics`，再运行受影响设备的现有图形验收。更新下面的 SHA-256。
 
 源文件使用 Blender Z 向上；下表坐标均指导出后的 Godot Y 向上坐标，1 单位 = 1 米。固定设备组件位于其占用格的局部坐标；缩放组件原点在底面轴心，接口组件原点在接口中心。
@@ -42,5 +42,23 @@
 
 | 文件 | SHA-256 |
 | --- | --- |
-| `chemical_equipment.blend` | `b9212af67d149db10ae7532ed8fb78b1b3c4233de264166ea59bbe2653a568e6` |
-| `chemical_equipment.glb` | `29fd85dc7b1ae17af787bfbe98db87b6ab82006e8f711bbbd11b8dfd8f73bce7` |
+| `chemical_equipment.blend` | `656ebc2afa0231cbcd93834f81bd0b254fbc0878294077062b47491f61ae78f3` |
+| `chemical_equipment.glb` | `5396ff5edcc4098850836a29f40c2da1085c0321c8c37a47c06874444a1b140c` |
+
+## 材质校准（写实第一阶段）
+
+参考 Blender Principled BSDF 的金属/绝缘体与涂层分层。下列是有限实时材质的制作参数，并非实测材料数据库；没有新增内部物料、仪表功能或碰撞几何。
+
+| 源材质 | 金属度 | 粗糙度 | Coat Weight / Roughness |
+| --- | --- | --- | --- |
+| Brushed stainless | 1 | 0.34 | 0 / 0.25 |
+| Safety brass | 1 | 0.30 | 0 / 0.25 |
+| Cool process / Warm process / Marine enamel | 0 | 0.38 | 0.28 / 0.24 |
+| Cast graphite（哑光深色表面） | 0 | 0.56 | 0 / 0.25 |
+| Gauge porcelain | 0 | 0.26 | 0.18 / 0.20 |
+
+绝缘体 IOR 为 1.5；不锈钢目前没有真实拉丝微划痕/各向异性贴图。Blender 源颜色保持线性值，glTF 导入负责转换；运行时端口色环使用 `linear_to_srgb()` 与导入颜色保持一致。
+
+本机 Godot 4.7.2 导入器未保留 `KHR_materials_clearcoat`。`godot/assets/industry/import_materials.gd` 在编辑器导入时从 GLB JSON 读取标量涂层权重/粗糙度，写入标准材质资源；不在运行时读盘或重建材质。将来新增涂层贴图时脚本明确拒绝，不静默丢失。脚本通过 `.glb.import` 绑定并从客户端导出包排除；发布包使用已经导入的材质。`industry_models.gd` 测试检查实际导入的涂层、金属度和色环颜色，再检查 908 组几何。
+
+Blender 的 Principled/AgX 与 Godot 的 Schlick-GGX/ACES 不逐像素等价。参考球只用于观察材质响应；最终效果以实际游戏窗口为准。

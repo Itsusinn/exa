@@ -13,9 +13,14 @@ func _init() -> void:
 	library.free()
 	for colour in [Color(0.68,0.245,0.055),Color(0.045,0.29,0.57),Color(0.7,0.49,0.13),Color(0.055,0.23,0.24)]:
 		var material := StandardMaterial3D.new()
-		material.albedo_color = colour
-		material.metallic = 0.5
-		material.roughness = 0.32
+		# Blender/glTF base colors are linear; Godot's color property is sRGB.
+		material.albedo_color = colour.linear_to_srgb()
+		var brass := accents.size() == 2
+		material.metallic = 1.0 if brass else 0.0
+		material.roughness = 0.30 if brass else 0.38
+		material.clearcoat_enabled = not brass
+		material.clearcoat = 0.28
+		material.clearcoat_roughness = 0.24
 		accents.append(material)
 
 func _read_components(node: Node, parent_transform: Transform3D) -> void:

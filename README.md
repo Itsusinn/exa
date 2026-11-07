@@ -39,6 +39,12 @@ just dev
 
 实现参考 Horizon 的 `world_post.wgsl` / `graphics_ui.rs` 中 AA 模式与时间历史职责，以及 Iris `shaderpack/properties/ProgramDirectives.java` 对光影包 TAA 渲染目标的兼容处理；本项目使用 Godot 自带 AA，不移植 wgpu/Java 管线、不叠加光影包 AA。原理和取舍见 [Godot 3D 抗锯齿说明](https://docs.godotengine.org/en/stable/tutorials/3d/3d_antialiasing.html)。`visuals.gd` 输出五档静态对照与 TAA/MSAA 4× 平移过程截图。
 
+写实第一阶段参考 [Blender Principled BSDF](https://docs.blender.org/manual/en/4.4/render/shader_nodes/shader/principled.html) 的金属/绝缘体、粗糙度、IOR 和涂层分层，校准设备漆层、裸金属与瓷质表盘，并同步 Blender 源文件和游戏 GLB。涂层导入与参数见 [设备材质说明](art/industry/README.md)。草地、土壤和树叶使用世界坐标连续变化的双采样去重复，颜色/法线/粗糙度同坐标混合；显式纹理梯度保留 mipmap 与各向异性过滤，石砖和木纹保留原排列方向。`organic_detiling=false` 可在开发时关闭以对照，未新增玩家设置。
+
+顶点调色使用标准 sRGB 分段转换。冰/雪按 IOR 1.31、普通绝缘体按 1.5 设置反射，依据 [Godot F0 实现](https://github.com/godotengine/godot/blob/master/servers/rendering/renderer_rd/shaders/scene_forward_lights_inc.glsl) 使用 `SPECULAR=(IOR-1)/(IOR+1)/0.4`；不能直接套用旧 Blender 的 Specular 数值。冰面允许较窄高光，继续使用法线方差过滤远处闪烁。本阶段不增加透明冰、水面折射或离线路径追踪；保留 Forward+ + SDFGI、ACES 和默认 MSAA 4×。
+
+`just godot-visuals` 使用离线演示和实际图形窗口生成对照，默认输出 `target/visual-review/`，可通过 `EXA_VISUAL_PATH` 指定目录。包含同机位去重复开关、法线/AO/边缘处理、五档 AA、移动画面和 UI 截图；`organic-frame-times.json` 记录静态视角的 120 帧中位数/P95，是含垂直同步和调度的帧间隔，不能当作 GPU 成本或长期探索基准。测试不保存用户画质设置、不打开真实存档。分阶段路线与验收状态见 [PLAN.md](PLAN.md)。
+
 ```sh
 just demo
 ```

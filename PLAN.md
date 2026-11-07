@@ -46,6 +46,23 @@ Windows 导出使用标准模板与纯运行时暂存项目，排除插件、.NE
 
 ## 验证状态与待办
 
+### 分阶段写实化路线（2026-11-07）
+
+目标是提高材料辨识度、受光层次和场景可信度；保持方块玩法与 Godot/Rust 边界。“3A”是视觉制作方向，不是一次材质调整即可达到的验收等级。
+
+| 阶段 | 工作与验收 |
+| --- | --- |
+| 1：材质基础（本轮） | Blender Principled 金属/绝缘体/涂层校准，同步源与 GLB；修复涂层导入和端口颜色空间；有机表面去重复、连续多尺度变化、冰雪 IOR；同机位窗口截图和导入材质检查。 |
+| 2：光照与反射（待实施） | 在晴天、阴影、室内和金属设备场景校准日光/天空/SDFGI，评估局部反射与高光压缩；先用固定曝光对照，确认色调映射取舍，再调整默认画面；记录 GPU 帧耗时与反射失效情况。 |
+| 3：环境与资产细节（待实施） | 石材/木材/金属微表面、合理纹理尺度、接缝与磨损、植被表现和远景层次；新增素材保留许可/校验，模型与碰撞继续遵循既定边界，植被密度或几何风格等明显取舍另行确认。 |
+| 4：性能与交付（待实施） | 按实测 GPU/显存预算形成画质分档，覆盖移动闪烁、两客户端、长时探索、分辨率/DPI，复验 Windows debug/release 导出；静态截图不能替代这些验收。 |
+
+第一阶段实现与 Blender/Godot 差异记录见 README 和 `art/industry/README.md`；没有改动存档、协议、世界事实或碰撞。以下历史记录保留各自当时的验证范围。
+
+第一阶段验收：`just check`、`just test`、`just godot-smoke`、`just godot-visuals`、`just godot-industry-models-graphics`、`just godot-column-loop-graphics` 通过。实际 Forward+ / RX 7900 XTX 窗口检查了有机表面去重复、法线/AO/AA、设备总览与九线实体回路；908 种规格/方向保持共享碰撞边界，真实 QUIC 和保存重开通过。Blender 5.2.3 EEVEE/AgX 参考球为 `target/realism-phase1-blender.png`；游戏改前/改后为 `target/realism-phase1-before/`、`target/realism-phase1-after/`，设备总览为 `target/blender-models-gallery.png`，实际回路为 `target/godot-column-loop-614626/`。同机位 120 帧去重复关闭/开启的帧间隔中位数为 8.362/8.364 ms，P95 为 8.471/8.498 ms；受垂直同步限制，不能据此宣称 GPU 成本不变。
+
+`just export-debug` 从隔离暂存项目重新导入并成功导出；PCK 独立只读检查确认 9 个涂层表面保留、编辑器导入脚本排除（`target/realism-phase1-export-data.log`）。关闭编辑器后，独立 `exa.exe -- --demo --capture ...` 在 Forward+ 实际渲染并以退出码 0 关闭，截图 `target/realism-phase1-export.png`，运行日志无错误。本轮未复验 release 导出、导出客户端独立联机、完整手动键鼠/DPI 或长时性能；不据此宣称整体重构或 3A 画面完成。真实存档和用户设置保持原状，未提交或推送。
+
 2026-11-05 项目整体改名为 **exa**：GitHub 仓库及 origin 已更新为 `Itsusinn/exa`；菜单、Godot 项目/编辑器工程、GDExtension、六个 Cargo 包、构建命令、运行程序与手动发布工作流统一使用 exa 名称。发布输出为 `exa.exe`、`exa.pck`、`exa_godot.dll`、`exa-server.exe` 和 `exa-<tag>-windows-x86_64.zip`。源码目录仍按模块职责组织，本地工作区路径仍为 `C:\Workspace\Code\game`。配置优先 `EXA_*` 并兼容 `CDDA_*`；已有玩家 UUID、设置和设计文件沿用旧路径，新安装使用 exa 目录。协议、存档标记、持久化资源 ID 和存档版本不变；已发布的 `v0.1.0` 保留原附件与校验值，本次未另行发布版本。
 
 验证：`just check`、236 项 Rust 测试、2 项脚本测试及 Rust 1.99.0 全 workspace/all-targets 严格 Clippy 通过；Godot smoke（新增命名、配置优先级与旧用户文件兼容检查）、真实双客户端联机、debug/release 导出通过。两种导出均在 Forward+ / RX 7900 XTX 实际启动并生成 exa 菜单截图。release 客户端完成离线启动、连接独立 release 服务端及保存退出，发布 ZIP 文件清单和 SHA-256 生成通过；仅使用旧 `CDDA_*` 的独立 release 服务端也在隔离目录成功生成证书和存档。所有运行数据位于 `target/`，未迁移真实存档或用户文件。

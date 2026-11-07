@@ -22,6 +22,43 @@ varying vec4 exposed_edges;
 uniform float contact_ao_strength : hint_range(0.0,1.0) = 0.85;
 uniform float bevel_width : hint_range(0.0,0.1) = 0.035;
 uniform float material_variation : hint_range(0.0,0.3) = 0.08;
+// Two coherent samples for organic surfaces only. Masonry courses and wood
+// grain retain their authored direction. Set to zero for same-camera review.
+uniform bool organic_detiling = true;
+
+vec3 srgb_to_linear(vec3 color) {
+    return mix(color / 12.92, pow((color + 0.055) / 1.055, vec3(2.4)),
+               step(vec3(0.04045), color));
+}
+
+float hash_cell(vec3 cell) {
+    vec3 p = fract(cell * 0.1031);
+    p += dot(p, p.yzx + 33.33);
+    return fract((p.x + p.y) * p.z);
+}
+
+float value_noise(vec3 p) {
+    vec3 cell = floor(p);
+    vec3 f = fract(p);
+    f = f*f*(3.0-2.0*f);
+    return mix(mix(mix(hash_cell(cell),hash_cell(cell+vec3(1,0,0)),f.x),
+                   mix(hash_cell(cell+vec3(0,1,0)),hash_cell(cell+vec3(1,1,0)),f.x),f.y),
+               mix(mix(hash_cell(cell+vec3(0,0,1)),hash_cell(cell+vec3(1,0,1)),f.x),
+                   mix(hash_cell(cell+vec3(0,1,1)),hash_cell(cell+vec3(1,1,1)),f.x),f.y),f.z);
+}
+
+vec3 organic_sample(sampler2D map, vec2 coords, float patch) {
+    if (!organic_detiling) return texture(map,coords).rgb;
+    float index = floor(patch);
+    vec2 a = vec2(hash_cell(vec3(index,1,0)),hash_cell(vec3(index,2,0))) * 8.0;
+    vec2 b = vec2(hash_cell(vec3(index+1.0,1,0)),hash_cell(vec3(index+1.0,2,0))) * 8.0;
+    // Explicit derivatives ignore patch offsets at index boundaries. All PBR
+    // channels use identical coordinates/weights, including the normal map.
+    vec2 dx = dFdx(coords);
+    vec2 dy = dFdy(coords);
+    return mix(textureGrad(map,coords+a,dx,dy).rgb,
+               textureGrad(map,coords+b,dx,dy).rgb,smoothstep(0.2,0.8,fract(patch)));
+}
 
 void vertex() {
     world_position = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
@@ -37,8 +74,7 @@ void vertex() {
 
 // Continuous world-space variation: no per-block tint seams or new assets.
 float material_noise(vec3 p) {
-    return (sin(p.x*1.17 + sin(p.z*0.83))*sin(p.z*1.31 + p.y*0.71)
-          + sin(p.y*1.07 + p.x*0.63)) * 0.5;
+    return (value_noise(p)*0.7 + value_noise(p*2.03+vec3(17.0))*0.3)*2.0-1.0;
 }
 
 vec3 bevel_normal(vec3 position, vec3 normal, vec2 face_uv) {
@@ -80,11 +116,17 @@ void fragment() {
     vec3 axis = abs(world_normal);
     vec2 plane = axis.y > 0.5 ? world_position.xz : (axis.x > 0.5 ? world_position.zy : world_position.xy);
     vec2 coords = plane * 0.4;
-    vec3 albedo = pow(COLOR.rgb,vec3(2.2));
+    vec3 albedo = srgb_to_linear(COLOR.rgb);
     vec3 detail_normal = vec3(0.5,0.5,1.0);
     float relief = 0.65;
     float roughness = 0.86;
     float metal = 0.0;
+    float ior = 1.5;
+    float roughness_floor = 0.32;
+    float organic_patch = 0.0;
+    if (organic_detiling && (pattern == 3 || pattern == 4 || pattern == 13)) {
+        organic_patch = value_noise(world_position*0.18)*8.0;
+    }
     if (pattern == 1 || pattern == 5 || pattern == 6) {
         // Chests and dropped supplies use local face coordinates.
         if (pattern == 5 || pattern == 6) { coords = UV; }
@@ -115,9 +157,9 @@ void fragment() {
     } else if (pattern == 3 || pattern == 4) {
         relief = 0.45;
         coords = plane * 0.65;
-        albedo = texture(grass_color,coords).rgb;
-        detail_normal = texture(grass_normal,coords).rgb;
-        roughness = texture(grass_rough,coords).r;
+        albedo = organic_sample(grass_color,coords,organic_patch);
+        detail_normal = organic_sample(grass_normal,coords,organic_patch);
+        roughness = organic_sample(grass_rough,coords,organic_patch).r;
         if (COLOR.r > COLOR.g) {
             float soil = dot(albedo,vec3(0.2126,0.7152,0.0722));
             albedo = soil * vec3(0.75,0.53,0.35);
@@ -150,16 +192,19 @@ void fragment() {
                 metal = vein*0.25;
             }
         } else if (pattern == 10) {
+            ior = 1.31;
             coords = plane * 1.2;
             detail_normal = texture(granular_normal,coords).rgb;
             relief = 0.25;
             roughness = 0.92;
             albedo = tint*(0.94+grain*0.06);
         } else if (pattern == 11) {
+            ior = 1.31;
+            roughness_floor = 0.18;
             coords = plane * 0.5;
             detail_normal = texture(granular_normal,coords).rgb;
             relief = 0.15;
-            roughness = 0.32;
+            roughness = 0.22;
             albedo = tint*(0.85+broad*0.15);
         } else if (pattern == 12) {
             coords = plane*vec2(0.65,0.4);
@@ -170,10 +215,10 @@ void fragment() {
             if (COLOR.r>0.7) albedo *= 1.0-step(0.87,fract(plane.y*2.0))*step(0.4,broad)*0.72;
         } else if (pattern == 13) {
             relief = 0.45;
-            float leaf = dot(texture(grass_color,coords).rgb,vec3(0.333));
+            float leaf = dot(organic_sample(grass_color,coords,organic_patch),vec3(0.333));
             albedo = tint*(0.6+leaf*1.8);
-            detail_normal = texture(grass_normal,coords).rgb;
-            roughness = texture(grass_rough,coords).r;
+            detail_normal = organic_sample(grass_normal,coords,organic_patch);
+            roughness = organic_sample(grass_rough,coords,organic_patch).r;
         }
     }
     if (pattern != 0 && pattern != 5 && pattern != 6) {
@@ -195,6 +240,8 @@ void fragment() {
     // Increase the specular lobe width for unresolved normal detail.
     float variance = dot(dFdx(mapped_normal),dFdx(mapped_normal)) + dot(dFdy(mapped_normal),dFdy(mapped_normal));
     NORMAL = mapped_normal;
-    ROUGHNESS = clamp(sqrt(roughness*roughness + min(variance,0.18)),0.32,0.98);
+    ROUGHNESS = clamp(sqrt(roughness*roughness + min(variance,0.18)),roughness_floor,0.98);
     METALLIC = metal;
+    // Godot's dielectric F0 = 0.16 * SPECULAR^2 (not Blender's legacy 0.08*S).
+    SPECULAR = (ior-1.0)/(ior+1.0)/0.4;
 }

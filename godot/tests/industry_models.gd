@@ -57,6 +57,7 @@ func verify(request: Dictionary) -> ArrayMesh:
 func run() -> void:
 	bridge = GameBridge.new()
 	root.add_child(bridge)
+	verify_finishes()
 	if "--gallery" in OS.get_cmdline_user_args():
 		await gallery()
 		bridge.queue_free()
@@ -86,6 +87,33 @@ func run() -> void:
 	await process_frame
 	print("GODOT_INDUSTRY_MODELS_RESULT=","FAIL" if failed else "PASS")
 	quit(1 if failed else 0)
+
+func verify_finishes() -> void:
+	# Check the actual imported glTF, not only the Blender source parameters.
+	var materials := {}
+	for component in library.components.values():
+		var mesh: Mesh = component.mesh
+		for i in range(mesh.get_surface_count()):
+			var finish := mesh.surface_get_material(i) as BaseMaterial3D
+			check(finish != null,"imported PBR finish exists")
+			if finish != null: materials[finish.resource_name.replace(" ","_")] = finish
+	for name in ["Brushed_stainless","Safety_brass"]:
+		check(materials.has(name),"imported metal exists: "+name)
+		if materials.has(name): check(is_equal_approx(materials[name].metallic,1.0),"bare metal survives glTF: "+name)
+	for name in ["Cool_process","Warm_process","Marine_enamel","Gauge_porcelain","Cast_graphite"]:
+		check(materials.has(name),"imported dielectric exists: "+name)
+		if not materials.has(name): continue
+		var finish: BaseMaterial3D = materials[name]
+		check(is_zero_approx(finish.metallic),"coating is dielectric: "+name)
+		if name != "Cast_graphite": check(finish.clearcoat_enabled and finish.clearcoat > 0.0,"coat survives glTF: "+name)
+	# Runtime port bands must match the corresponding authored finish/color space.
+	for i in range(4):
+		var name: String = ["Warm_process","Cool_process","Safety_brass","Marine_enamel"][i]
+		if not materials.has(name): continue
+		var authored: BaseMaterial3D = materials[name]
+		var accent: StandardMaterial3D = library.accents[i]
+		check(accent.albedo_color.is_equal_approx(authored.albedo_color),"accent color matches imported linear base color: "+name)
+		check(is_equal_approx(accent.metallic,authored.metallic),"accent metalness matches: "+name)
 
 func gallery() -> void:
 	var world := Node3D.new()

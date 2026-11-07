@@ -82,6 +82,10 @@ godot-mcp:
 godot-smoke:
     cargo +nightly -Zscript scripts/godot.rs smoke
 
+# 实际 Forward+ 窗口检查材质、去重复、法线与抗锯齿，使用离线演示
+godot-visuals:
+    cargo +nightly -Zscript scripts/godot.rs visuals
+
 # 使用隔离服务端检查两个 Godot 桥接实例联机
 godot-multiplayer:
     cargo +nightly -Zscript scripts/godot.rs multiplayer
