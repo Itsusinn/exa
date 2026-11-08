@@ -70,8 +70,32 @@ static func apply(environment: Environment, sun: DirectionalLight3D, enhanced: b
 	environment.ssr_depth_tolerance = 0.2 if enhanced else 0.5
 	environment.ssr_fade_in = 0.15
 	environment.ssr_fade_out = 2.0
+	apply_atmosphere(environment, enhanced)
+	if not enhanced:
+		# Keep the historical phase-1 lighting reference, including its sky haze.
+		environment.fog_sky_affect = 1.0
+
+## Artistic distance layering, not a physical atmospheric scattering integral.
+## Independent of daylight/GI/material profiles; false restores phase-3A fog.
+static func apply_atmosphere(environment: Environment, enhanced: bool = true) -> void:
 	environment.fog_enabled = true
-	environment.fog_light_color = horizon
-	environment.fog_density = 0.0015
-	# Preserve distance haze on geometry while revealing the daylight sky gradient.
-	environment.fog_sky_affect = 0.25 if enhanced else 1.0
+	environment.fog_light_color = Color("bfcbd1")
+	environment.fog_light_energy = 1.0
+	environment.fog_sun_scatter = 0.0
+	environment.fog_height = 0.0
+	environment.fog_height_density = 0.0
+	environment.fog_aerial_perspective = 0.0
+	# Keep sky blending unchanged: standard sky fog is independent of depth density.
+	environment.fog_sky_affect = 0.25
+	environment.fog_mode = Environment.FOG_MODE_DEPTH if enhanced else Environment.FOG_MODE_EXPONENTIAL
+	# In depth mode density is maximum opacity, NOT the exponential per-metre rate.
+	# Godot uses pow(smoothstep(begin, end, radial_distance), curve) * density.
+	# 16 m stays clear, 32 m reaches ~2.5%, 48 m ~13.6%, and 64 m caps at 22%.
+	# This fits the existing 7x7 streamed columns (48-64 m cardinal, farther on
+	# diagonals); it intentionally cannot hide all edges of the resident terrain.
+	environment.fog_density = 0.22 if enhanced else 0.0015
+	environment.fog_depth_begin = 16.0 if enhanced else 10.0
+	environment.fog_depth_end = 64.0 if enhanced else 100.0
+	environment.fog_depth_curve = 1.6 if enhanced else 1.0
+	# No height or volume fog: short indoor views remain clear, but distant indoor
+	# surfaces still receive distance fog because this effect has no room occlusion.

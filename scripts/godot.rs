@@ -28,6 +28,7 @@ const ACTIONS: &[&str] = &[
     "visuals",
     "lighting",
     "surface-details",
+    "weathering",
     "export-debug",
     "export-release",
     "multiplayer",
@@ -110,7 +111,17 @@ fn execute() -> Result {
             scenario(&godot, &project, "smoke", true)
         }
         "multiplayer" => multiplayer(&repo, &target, &godot),
-        "visuals" | "lighting" | "surface-details" => {
+        "visuals" | "lighting" | "surface-details" | "weathering" => {
+            if action == "weathering" {
+                run(cargo(&repo).args([
+                    "test",
+                    "-p",
+                    "exa-server",
+                    "--jobs",
+                    "2",
+                    "ecology_sites_cover_materials_and_emit_graphics_fixture",
+                ]))?;
+            }
             run(godot
                 .command(&project)?
                 .args(["--headless", "--editor", "--import", "--quit"]))?;

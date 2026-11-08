@@ -56,6 +56,8 @@ func run() -> void:
 	check(scene.material != null,"actual voxel shader exists")
 	scene.set_process(false)
 	scene.hud.visible = false
+	# Keep this historical phase-two comparison independent of later weathering.
+	scene.material.set_shader_parameter("surface_weathering_strength",0.0)
 	_add_equipment()
 	viewport_rid = root.get_viewport_rid()
 	RenderingServer.viewport_set_measure_render_time(viewport_rid,true)
@@ -104,6 +106,7 @@ func run() -> void:
 	scene.hud.gi_toggle.button_pressed = false
 	for enhanced in [false,true]:
 		Lighting.apply(scene.environment,scene.sun,enhanced)
+		if enhanced: Lighting.apply_atmosphere(scene.environment,false)
 		check(not scene.environment.sdfgi_enabled,"profile preserves disabled player GI setting")
 	await _warmup()
 	report.views["metal-no-gi"] = await _measure()
@@ -123,6 +126,7 @@ func run() -> void:
 
 func _apply_profile(enhanced: bool) -> void:
 	Lighting.apply(scene.environment,scene.sun,enhanced)
+	if enhanced: Lighting.apply_atmosphere(scene.environment,false)
 	check(scene.environment.sdfgi_enabled,"profile preserves enabled GI")
 	check(scene.environment.tonemap_mode == Environment.TONE_MAPPER_ACES,"profile preserves ACES")
 	check(is_equal_approx(scene.environment.tonemap_exposure,1.0),"comparison uses fixed exposure")

@@ -45,6 +45,9 @@ func run() -> void:
 	check("surface_detail_strength" in uniform_names,"voxel detail control exists")
 	scene.set_process(false)
 	scene.hud.visible = false
+	# Isolate phase 3A from later weathering and atmosphere changes.
+	scene.material.set_shader_parameter("surface_weathering_strength",0.0)
+	Lighting.apply_atmosphere(scene.environment,false)
 	_build_targets()
 	await _wait_for_textures()
 	_validate_material_contract()

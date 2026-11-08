@@ -53,6 +53,12 @@ just dev
 
 `just godot-surface-details` 在实际 Forward+ 窗口固定第二阶段光照、曝光与 MSAA 4×，生成石木近景、设备近景/大小罐体、远景及镜头平移的开关对照，并记录 viewport CPU/GPU 时间。默认输出 `target/surface-details-review/`，支持 `EXA_VISUAL_PATH`；测试还检查源材质不变、缓存复用和关闭时恢复属性。开发对照可设置地形 `surface_detail_strength=0`，或调用设备模型库 `set_surface_detail(false)`，未新增玩家设置。像素差异只证明效果存在，画质仍需结合截图审视。
 
+写实第三阶段 B 将现有体素邻接数据用作饰面遮罩：石木外露凸边轻微变亮、降低粗糙度，凹处仅增加粗糙度；共面拼接处不增加边线，也不重复压暗 AO。世界坐标的低频变化打散边带，导数过滤让亚像素细节淡出。`surface_weathering_strength=0` 单独关闭此层。这借鉴 [Blender Geometry Pointiness 的磨损遮罩思路](https://docs.blender.org/manual/en/latest/render/shader_nodes/input/geometry.html)，实际使用的是体素邻接标记，非曲率计算或随时间发生的物理老化。
+
+远景改用有界距离雾：16 米内无新增几何雾，16–64 米平滑渐入，64 米后最多 22% 雾强度；保留既有天空、日光、GI、SSR 与曝光。`WorldLighting.apply_atmosphere(environment,false)` 可恢复第三阶段 A 的指数雾。它是美术距离分层，不是物理大气模拟；不保证隐藏流送边缘，远处室内也会受雾影响。参数语义见 [Godot Environment](https://docs.godotengine.org/en/4.6/classes/class_environment.html)。
+
+`just godot-weathering` 先生成真实生态定位数据，再在 Forward+ 窗口检查近景饰面、共面/负坐标边界和真实森林、荒漠、洞窟的空气透视；存档与截图均放在 `target/`，不会修改用户设置。旧 `godot-lighting`、`godot-surface-details` 专项显式关闭第三阶段 B 增强，以保留各自的历史比较基线。
+
 ```sh
 just demo
 ```

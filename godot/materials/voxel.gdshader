@@ -25,8 +25,10 @@ uniform float material_variation : hint_range(0.0,0.3) = 0.08;
 // Two coherent samples for organic surfaces only. Masonry courses and wood
 // grain retain their authored direction. Set to zero for same-camera review.
 uniform bool organic_detiling = true;
-// Development comparison: zero restores the complete phase-two surface response.
+// Development comparison: zero disables the phase-three-A microdetail layer.
 uniform float surface_detail_strength : hint_range(0.0,1.0) = 1.0;
+// Development comparison: zero restores the complete phase-three-A surface.
+uniform float surface_weathering_strength : hint_range(0.0,1.0) = 1.0;
 
 vec3 srgb_to_linear(vec3 color) {
     return mix(color / 12.92, pow((color + 0.055) / 1.055, vec3(2.4)),
@@ -138,6 +140,10 @@ void fragment() {
     vec2 detail_dy = dFdy(detail_coords);
     vec3 position_dx = dFdx(VERTEX);
     vec3 position_dy = dFdy(VERTEX);
+    // Weathering uses face metres (one voxel face is 1m) and continuous world
+    // coordinates. Keep derivatives outside the material-dependent branch.
+    float weather_face_footprint = length(fwidth(UV));
+    float weather_world_footprint = length(fwidth(world_position)) * 1.35;
     vec2 coords = plane * 0.4;
     vec3 albedo = srgb_to_linear(COLOR.rgb);
     vec3 detail_normal = vec3(0.5,0.5,1.0);
@@ -269,12 +275,35 @@ void fragment() {
             micro_normal = normalize(mat3(t*scale,b*scale,NORMAL) * vec3(slope,sqrt(max(1.0-dot(slope,slope),0.001))));
         }
     }
-    ALBEDO = albedo;
     // Smooth bilinear interpolation has zero slope at shared block boundaries;
     // unlike triangle interpolation it remains smooth across the face diagonal.
     vec2 blend = smoothstep(vec2(0.0),vec2(1.0),UV);
     float occluders = mix(mix(corner_ao.x,corner_ao.y,blend.x),
                           mix(corner_ao.w,corner_ao.z,blend.x),blend.y);
+    if (surface_weathering_strength > 0.0 && (detail_wood || detail_stone)) {
+        // Geometry-mask driven wear: authoritative exposed edges exclude
+        // coplanar block seams. Max, rather than sum, keeps corners bounded.
+        float width = detail_wood ? 0.035 : 0.045;
+        vec4 edge_distance = vec4(UV.y,1.0-UV.x,1.0-UV.y,UV.x);
+        vec4 edge_weight = (1.0-smoothstep(vec4(0.0),vec4(width),edge_distance))*exposed_edges;
+        float edge = max(max(edge_weight.x,edge_weight.y),max(edge_weight.z,edge_weight.w));
+        edge *= 1.0-smoothstep(width*0.5,width*1.5,weather_face_footprint);
+        // A single low-frequency field breaks up the edge band without adding
+        // another brick grid. Its smooth lattice is continuous at negative
+        // coordinates too; fade unresolved variation instead of aliasing it.
+        float patch = smoothstep(0.28,0.72,value_noise(world_position*1.35+vec3(7.3,19.1,3.7)));
+        float weight = clamp(surface_weathering_strength,0.0,1.0)
+                     * (1.0-smoothstep(0.20,0.50,weather_world_footprint));
+        float wear = edge * patch * weight;
+        // Adjacency only modulates the roughness in sheltered areas. It never
+        // darkens albedo or multiplies AO a second time, and cannot hide wear.
+        float shelter = clamp(occluders/3.0,0.0,1.0) * (1.0-edge)
+                      * (0.25+0.75*patch) * weight;
+        albedo *= 1.0 + wear * (detail_wood ? 0.018 : 0.025);
+        roughness += shelter * (detail_wood ? 0.018 : 0.025)
+                   - wear * (detail_wood ? 0.025 : 0.035);
+    }
+    ALBEDO = albedo;
     AO = 1.0 - occluders * 0.18 * contact_ao_strength;
     AO_LIGHT_AFFECT = 0.2;
     vec3 mapped_normal = surface_normal(detail_normal,coords,VERTEX,NORMAL,relief);

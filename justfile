@@ -94,6 +94,10 @@ godot-lighting:
 godot-surface-details:
     cargo +nightly -Zscript scripts/godot.rs surface-details
 
+# 对照石木风化与真实生态地形的远景空气透视
+godot-weathering:
+    cargo +nightly -Zscript scripts/godot.rs weathering
+
 # 使用隔离服务端检查两个 Godot 桥接实例联机
 godot-multiplayer:
     cargo +nightly -Zscript scripts/godot.rs multiplayer
