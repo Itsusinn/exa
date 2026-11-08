@@ -62,3 +62,9 @@
 本机 Godot 4.7.2 导入器未保留 `KHR_materials_clearcoat`。`godot/assets/industry/import_materials.gd` 在编辑器导入时从 GLB JSON 读取标量涂层权重/粗糙度，写入标准材质资源；不在运行时读盘或重建材质。将来新增涂层贴图时脚本明确拒绝，不静默丢失。脚本通过 `.glb.import` 绑定并从客户端导出包排除；发布包使用已经导入的材质。`industry_models.gd` 测试检查实际导入的涂层、金属度和色环颜色，再检查 908 组几何。
 
 Blender 的 Principled/AgX 与 Godot 的 Schlick-GGX/ACES 不逐像素等价。参考球只用于观察材质响应；最终效果以实际游戏窗口为准。
+
+## 运行时微表面（写实第三阶段 3A）
+
+`godot/src/industry_materials.gd` 在原始导入材质上创建会话内缓存副本，使用 `StandardMaterial3D` 的世界三向投影添加微法线和粗糙度变化。新增四张原创固定种子 512px `NoiseTexture2D` 定义位于 `godot/materials/industry/`，启用 seamless、mipmap 和各向异性过滤；贴图周期为 0.25 米，不随罐径、塔高或模型 UV 拉伸。金属和漆层使用不同强度，粗糙度按纹理平均值补偿，原颜色、金属度、清漆保持不变；瓷质表盘保持平滑。这里是各向同性饰面起伏，不代表真实拉丝、实测各向异性或会随使用积累的磨损。
+
+本层不修改 `.blend`、GLB、导入材质或设备几何，上表校验保持不变；已有带纹理的源材质自动跳过，避免改变其 UV 语义。每种源材质只建立一个缓存副本，设备共享，读数变化不重建；`IndustryModels.set_surface_detail(false)` 可原位恢复原材质属性作开发对照，不写用户设置。运行时不依赖 Blender。`just godot-surface-details` 验证缓存复用、源资源未变、近远景和不同尺寸设备的细节对照，生产仍沿用原有建造/碰撞与保存验收。

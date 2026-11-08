@@ -3,9 +3,11 @@ extends RefCounted
 ## Port positions, dimensions and collision envelopes come from the Rust bridge.
 const Library = preload("res://assets/industry/chemical_equipment.glb")
 const PumpDirection = preload("res://src/pump_direction.gd")
+const SurfaceMaterials = preload("res://src/industry_materials.gd")
 var components: Dictionary = {}
 var surfaces: Dictionary = {}
 var accents: Array[StandardMaterial3D] = []
+var materials = SurfaceMaterials.new()
 
 func _init() -> void:
 	var library := Library.instantiate()
@@ -13,6 +15,7 @@ func _init() -> void:
 	library.free()
 	for colour in [Color(0.68,0.245,0.055),Color(0.045,0.29,0.57),Color(0.7,0.49,0.13),Color(0.055,0.23,0.24)]:
 		var material := StandardMaterial3D.new()
+		material.resource_name = ["Warm_process","Cool_process","Safety_brass","Marine_enamel"][accents.size()]
 		# Blender/glTF base colors are linear; Godot's color property is sRGB.
 		material.albedo_color = colour.linear_to_srgb()
 		var brass := accents.size() == 2
@@ -22,6 +25,9 @@ func _init() -> void:
 		material.clearcoat = 0.28
 		material.clearcoat_roughness = 0.24
 		accents.append(material)
+
+func set_surface_detail(enabled: bool) -> void:
+	materials.set_surface_detail(enabled)
 
 func _read_components(node: Node, parent_transform: Transform3D) -> void:
 	var transform := parent_transform
@@ -36,7 +42,7 @@ func _part(name: String, position := Vector3.ZERO, scale := Vector3.ONE, basis :
 	var mesh: Mesh = source.mesh
 	var transform: Transform3D = Transform3D(basis.scaled_local(scale),position)*source.transform
 	for index in range(mesh.get_surface_count()):
-		var paint: Material = material if material != null else mesh.surface_get_material(index)
+		var paint: Material = materials.resolve(material if material != null else mesh.surface_get_material(index))
 		if not surfaces.has(paint):
 			var tool := SurfaceTool.new()
 			tool.begin(Mesh.PRIMITIVE_TRIANGLES)

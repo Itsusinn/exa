@@ -27,6 +27,7 @@ const ACTIONS: &[&str] = &[
     "smoke",
     "visuals",
     "lighting",
+    "surface-details",
     "export-debug",
     "export-release",
     "multiplayer",
@@ -109,11 +110,11 @@ fn execute() -> Result {
             scenario(&godot, &project, "smoke", true)
         }
         "multiplayer" => multiplayer(&repo, &target, &godot),
-        "visuals" | "lighting" => {
+        "visuals" | "lighting" | "surface-details" => {
             run(godot
                 .command(&project)?
                 .args(["--headless", "--editor", "--import", "--quit"]))?;
-            scenario(&godot, &project, action, false)
+            scenario(&godot, &project, &action.replace('-', "_"), false)
         }
         "industry-models" | "industry-models-graphics" => {
             run(godot

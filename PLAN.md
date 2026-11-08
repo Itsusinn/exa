@@ -53,8 +53,8 @@ Windows 导出使用标准模板与纯运行时暂存项目，排除插件、.NE
 | 阶段 | 工作与验收 |
 | --- | --- |
 | 1：材质基础（已提交） | Blender Principled 金属/绝缘体/涂层校准，同步源与 GLB；修复涂层导入和端口颜色空间；有机表面去重复、连续多尺度变化、冰雪 IOR；同机位窗口截图和导入材质检查。提交 `b422301` 已推送 `main`。 |
-| 2：光照与反射（本轮已实现） | 在晴天、阴影、室内和金属设备场景校准日光/天空/SDFGI，加入有界 SSR 与天空反射回退；保留 ACES/固定曝光，记录实际 viewport GPU 渲染耗时与屏外反射限制。 |
-| 3：环境与资产细节（待实施） | 石材/木材/金属微表面、合理纹理尺度、接缝与磨损、植被表现和远景层次；新增素材保留许可/校验，模型与碰撞继续遵循既定边界，植被密度或几何风格等明显取舍另行确认。 |
+| 2：光照与反射（已提交） | 在晴天、阴影、室内和金属设备场景校准日光/天空/SDFGI，加入有界 SSR 与天空反射回退；保留 ACES/固定曝光，记录实际 viewport GPU 渲染耗时与屏外反射限制。提交 `9ab1312` 已推送 `main`。 |
+| 3：环境与资产细节（A 已实现） | A：石材/木材/工业金属与漆面微表面、固定纹理尺度、远处细节过滤；B 待实施：接缝与磨损、植被表现和远景层次。素材保留许可，模型与碰撞继续遵循既定边界，植被密度或几何风格等明显取舍另行确认。 |
 | 4：性能与交付（待实施） | 按实测 GPU/显存预算形成画质分档，覆盖移动闪烁、两客户端、长时探索、分辨率/DPI，复验 Windows debug/release 导出；静态截图不能替代这些验收。 |
 
 第一阶段实现与 Blender/Godot 差异记录见 README 和 `art/industry/README.md`；没有改动存档、协议、世界事实或碰撞。以下历史记录保留各自当时的验证范围。
@@ -63,7 +63,15 @@ Windows 导出使用标准模板与纯运行时暂存项目，排除插件、.NE
 
 验证：`just check`、236 项 `just test`、`just godot-lighting`、`just godot-smoke`、`just godot-column-loop-graphics` 通过。最终专项证据 `target/lighting-phase2-final/`，日志 `target/lighting-phase2-{final,smoke,loop,rust-tests}.log`；实际设备建造、九线接管、检查、拆除及保存重开证据 `target/godot-column-loop-618075/`。专项测试固定 1280×800、MSAA 4×、ACES/曝光 1，在 RX 7900 XTX 上使用正式离线地形和真实工业模型标靶，停止游戏处理后每视角预热 96 帧、采样 64 帧；检查了室外、阴影、檐下、金属、GI 关闭及 72 帧镜头旋转的采样截图。所有 GPU 计时样本有效，SSR 单独关闭/开启的 viewport GPU 中位数为 1.087/1.263 ms（+0.176 ms），P95 为 1.120/1.298 ms；这不是整游戏帧时间、长时移动或其他 GPU 的性能保证。资源存在和像素差异断言之外，主 agent 与独立审查 agent 均实际查看了反射与暗部截图。
 
-第二阶段 debug 导出重新导入/打包成功，关闭编辑器后独立正常入口离线运行、截图并以退出码 0 结束，日志 `target/lighting-phase2-export-runtime.log` 无错误，截图 `target/lighting-phase2-export.png`。未复验 release、导出联机、长时探索、完整手动键鼠/DPI；未写真实存档或用户设置。本阶段改动留在工作区，尚未提交推送；第一阶段远端提交为 `b4223013b3cdc01d9e02e7d5bf3292b261697c01`。
+第二阶段 debug 导出重新导入/打包成功，关闭编辑器后独立正常入口离线运行、截图并以退出码 0 结束，日志 `target/lighting-phase2-export-runtime.log` 无错误，截图 `target/lighting-phase2-export.png`。未复验 release、导出联机、长时探索、完整手动键鼠/DPI；未写真实存档或用户设置。2026-11-08 按用户要求提交并推送第二阶段，远端 `main` 已核对为 `9ab13123e69ab3755e6ebe835e4783f9d1f6b903`。
+
+第三阶段 A（2026-11-08）：第二阶段推送后，三个子 agent 分别实现石木微表面、工业材质副本和专项图形验收/独立审查。石木复用已有固定种子颗粒法线，保持原砖缝/木纹，使用最短弧旋转叠加法线及小幅粗糙度扰动；微法线随 `normal_strength` 关闭。新增采样使用显式梯度和 mipmap，在颗粒趋近两像素时平滑衰减，远处完全跳过采样。木板与树皮分别沿原贴图 U/V 纤维方向拉伸，不改变底色。
+
+工业模型对既有裸金属和漆面创建缓存材质副本，四张原创固定种子 512px 无缝法线/粗糙度资源使用 mipmap 与世界坐标三向投影，每 0.25 米重复；小罐/大罐的几何尺度不改变纹理尺度。底色、金属度、涂层和瓷质表盘保持原值，有贴图的未来导入材质直接保留。开发开关原地修改副本，关闭完整恢复属性，源 GLB/Blender、权威几何、碰撞、存档、协议及第二阶段光照均不变。这是有限美术微表面近似，不代表真实各向异性拉丝、实测材料或实体磨损。
+
+`just godot-surface-details` 最终通过；证据 `target/surface-phase3-final/`，日志 `target/surface-phase3-final.log`。专项实际 Forward+ / RX 7900 XTX / 1280×800 / MSAA 4× / ACES 曝光 1，固定第二阶段光照，每视角预热 96 帧、采样 64 帧；石木近景、工业近景、2×3/6×6 罐体、远景的同机位开关对照及近/远平移采样均已生成。检查源材质不变、共享副本复用、关闭恢复属性与纹理就绪。新增细节关闭/开启的 viewport GPU 中位数：石材 1.131/1.226 ms，木材 1.137/1.166 ms，设备近景 1.185/1.393 ms（P95 1.202/1.408），远景 1.155/1.182 ms；这不是整游戏、连续运动、长时探索或其他显卡的性能保证。主 agent 与独立审查 agent 查看同机位与移动采样截图，未见明显过强颗粒、破碎高光或木纹遮盖；金属读感更接近细微喷砂，采样截图不替代连续运动无闪烁验收。
+
+第三阶段 A 回归：`just check`、236 项 `just test`、`just godot-visuals`、`just godot-industry-models-graphics`（908 种规格/方向）、`just godot-smoke`、`just godot-column-loop-graphics` 全部通过，日志为 `target/surface-phase3-{check,rust-tests,visuals,models,smoke,loop}.log`。真实工业建拆、九线接管、保存重开的隔离证据为 `target/godot-column-loop-616489/`，未使用真实存档。`just export-debug` 重新导入打包，日志确认四张程序纹理和材质脚本纳入；独立正常入口离线截图后退出码 0，运行日志无错误，证据 `target/surface-phase3-export.png`、`target/surface-phase3-export-runtime.log`。未复验 release、导出工业联机、长时探索、完整手动键鼠/DPI。第三阶段 A 改动尚未提交；植被/几何取舍、实体磨损与阶段 4 的性能分档仍待后续。
 
 第一阶段验收：`just check`、`just test`、`just godot-smoke`、`just godot-visuals`、`just godot-industry-models-graphics`、`just godot-column-loop-graphics` 通过。实际 Forward+ / RX 7900 XTX 窗口检查了有机表面去重复、法线/AO/AA、设备总览与九线实体回路；908 种规格/方向保持共享碰撞边界，真实 QUIC 和保存重开通过。Blender 5.2.3 EEVEE/AgX 参考球为 `target/realism-phase1-blender.png`；游戏改前/改后为 `target/realism-phase1-before/`、`target/realism-phase1-after/`，设备总览为 `target/blender-models-gallery.png`，实际回路为 `target/godot-column-loop-614626/`。同机位 120 帧去重复关闭/开启的帧间隔中位数为 8.362/8.364 ms，P95 为 8.471/8.498 ms；受垂直同步限制，不能据此宣称 GPU 成本不变。
 

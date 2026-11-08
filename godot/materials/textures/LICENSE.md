@@ -18,6 +18,14 @@ No preview renders, website branding or example scenes are included.
 `../granular_normal.tres` is a project-authored procedural normal texture
 definition (FastNoiseLite seed 731), not a downloaded Poly Haven asset.
 It generates a seamless 512px normal map for sand/clay, snow and ice.
+Phase 3A also reuses it as a filtered secondary normal for stone and wood;
+the downloaded color/normal/roughness maps remain unmodified.
+
+`../industry/{metal,paint}_{normal,roughness}.tres` are original procedural
+definitions covered by the repository license, not third-party images.
+Their fixed FastNoiseLite seeds are 9023, 9031, 9157 and 9161 respectively.
+They generate seamless 512px textures with mipmaps for the runtime finish
+layer; no external asset download or Blender runtime is required.
 
 `../exa_background.png` is a screenshot rendered by this project's own
 Godot scene using these materials, captured without HUD via `tests/visuals.gd`.

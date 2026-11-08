@@ -90,6 +90,10 @@ godot-visuals:
 godot-lighting:
     cargo +nightly -Zscript scripts/godot.rs lighting
 
+# 固定光照检查近远处石木与工业材质微细节
+godot-surface-details:
+    cargo +nightly -Zscript scripts/godot.rs surface-details
+
 # 使用隔离服务端检查两个 Godot 桥接实例联机
 godot-multiplayer:
     cargo +nightly -Zscript scripts/godot.rs multiplayer

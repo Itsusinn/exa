@@ -25,6 +25,8 @@ uniform float material_variation : hint_range(0.0,0.3) = 0.08;
 // Two coherent samples for organic surfaces only. Masonry courses and wood
 // grain retain their authored direction. Set to zero for same-camera review.
 uniform bool organic_detiling = true;
+// Development comparison: zero restores the complete phase-two surface response.
+uniform float surface_detail_strength : hint_range(0.0,1.0) = 1.0;
 
 vec3 srgb_to_linear(vec3 color) {
     return mix(color / 12.92, pow((color + 0.055) / 1.055, vec3(2.4)),
@@ -111,10 +113,31 @@ vec3 surface_normal(vec3 sample_normal, vec2 coords, vec3 position, vec3 normal,
     return normalize(mat3(t * scale,b * scale,normal) * vec3(xy,sqrt(max(1.0-dot(xy,xy),0.001))));
 }
 
+// Rotate a detail normal from the geometric surface onto its authored normal.
+// Unlike replacing/mixing the base map, this preserves its brick joints/grain.
+vec3 layer_surface_normal(vec3 base, vec3 detail, vec3 geometric) {
+    vec3 axis = cross(geometric,base);
+    vec3 turn = cross(axis,detail);
+    return normalize(detail + turn + cross(axis,turn)/max(1.0+dot(geometric,base),0.0001));
+}
+
 void fragment() {
     int pattern = int(round(UV2.x));
     vec3 axis = abs(world_normal);
     vec2 plane = axis.y > 0.5 ? world_position.xz : (axis.x > 0.5 ? world_position.zy : world_position.xy);
+    bool detail_wood = pattern == 1 || pattern == 12;
+    bool detail_stone = pattern == 2 || pattern == 8 || pattern == 9 || pattern == 14;
+    bool detail_bark = pattern == 12 || (pattern == 1 && COLOR.r < 0.5);
+    // Repeats per metre. The authored plank fibers run along U, bark along V.
+    // Only the seamless granular map is resampled, never the masonry/wood maps.
+    vec2 detail_repeat = detail_wood ? (detail_bark ? vec2(1.8,0.10) : vec2(0.10,1.8)) : vec2(0.75);
+    vec2 detail_coords = plane * detail_repeat;
+    // Evaluate derivatives outside the material branch. Combined pixel-axis
+    // footprints cover the densest direction of the stretched wood detail.
+    vec2 detail_dx = dFdx(detail_coords);
+    vec2 detail_dy = dFdy(detail_coords);
+    vec3 position_dx = dFdx(VERTEX);
+    vec3 position_dy = dFdy(VERTEX);
     vec2 coords = plane * 0.4;
     vec3 albedo = srgb_to_linear(COLOR.rgb);
     vec3 detail_normal = vec3(0.5,0.5,1.0);
@@ -226,6 +249,26 @@ void fragment() {
         albedo *= 1.0 + material_variation*variation;
         roughness += material_variation*variation*0.3;
     }
+    vec3 micro_normal = NORMAL;
+    float detail_weight = 0.0;
+    if (surface_detail_strength > 0.0 && (detail_wood || detail_stone)) {
+        // The existing 512px FastNoiseLite map's base lattice scale is 0.08
+        // per texel (~41 grains/tile). Mipmaps filter its finer octaves;
+        // fade the addition as base grains approach two pixels in width.
+        float grain_footprint = length(abs(detail_dx)+abs(detail_dy)) * 41.0;
+        detail_weight = surface_detail_strength * (1.0-smoothstep(0.20,0.50,grain_footprint));
+        if (detail_weight > 0.0) {
+            vec2 micro = textureGrad(granular_normal,detail_coords,detail_dx,detail_dy).rg * 2.0-1.0;
+            roughness += dot(micro,vec2(0.5)) * (detail_wood ? 0.014 : 0.018) * detail_weight;
+            vec3 p2_perp = cross(position_dy,NORMAL);
+            vec3 p1_perp = cross(NORMAL,position_dx);
+            vec3 t = p2_perp * detail_dx.x + p1_perp * detail_dy.x;
+            vec3 b = p2_perp * detail_dx.y + p1_perp * detail_dy.y;
+            float scale = inversesqrt(max(max(dot(t,t),dot(b,b)),1e-20));
+            vec2 slope = micro * (detail_wood ? 0.08 : 0.10) * detail_weight * normal_strength;
+            micro_normal = normalize(mat3(t*scale,b*scale,NORMAL) * vec3(slope,sqrt(max(1.0-dot(slope,slope),0.001))));
+        }
+    }
     ALBEDO = albedo;
     // Smooth bilinear interpolation has zero slope at shared block boundaries;
     // unlike triangle interpolation it remains smooth across the face diagonal.
@@ -235,6 +278,9 @@ void fragment() {
     AO = 1.0 - occluders * 0.18 * contact_ao_strength;
     AO_LIGHT_AFFECT = 0.2;
     vec3 mapped_normal = surface_normal(detail_normal,coords,VERTEX,NORMAL,relief);
+    if (detail_weight > 0.0 && normal_strength > 0.0) {
+        mapped_normal = layer_surface_normal(mapped_normal,micro_normal,NORMAL);
+    }
     // Preserve the normal-map relief while rounding only exposed voxel edges.
     mapped_normal = normalize(mapped_normal + bevel_normal(VERTEX,NORMAL,UV) - NORMAL);
     // Increase the specular lobe width for unresolved normal detail.

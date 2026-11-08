@@ -1,0 +1,15 @@
+[gd_resource type="NoiseTexture2D" load_steps=2 format=3]
+
+[sub_resource type="FastNoiseLite" id="Noise_metal"]
+seed = 9023
+frequency = 0.08
+fractal_octaves = 2
+
+[resource]
+width = 512
+height = 512
+generate_mipmaps = true
+seamless = true
+as_normal_map = true
+bump_strength = 6.0
+noise = SubResource("Noise_metal")
