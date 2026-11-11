@@ -5,6 +5,7 @@ const IndustryView = preload("res://src/industry_view.gd")
 const DistillationView = preload("res://src/distillation_view.gd")
 const MaterialShader = preload("res://materials/voxel.gdshader")
 const WorldLighting = preload("res://src/world_lighting.gd")
+const DistantView = preload("res://src/distant_view.gd")
 var bridge: GameBridge
 var camera: Camera3D
 var hud: CanvasLayer
@@ -13,7 +14,11 @@ var sun: DirectionalLight3D
 var terrain_root: Node3D
 var terrain_nodes: Dictionary = {}
 var terrain_pending: Dictionary = {}
+var terrain_uploaded: Dictionary = {}
+var distant: Node3D
 var terrain_updates_last_frame := 0
+var terrain_total_updates_last_frame := 0
+var terrain_upload_usec_last_frame := 0
 const TERRAIN_BUDGET_USEC := 2000
 const TERRAIN_UPDATES_PER_FRAME := 2
 var entities: Dictionary = {}
@@ -157,6 +162,9 @@ func _setup_world() -> void:
 	var world := WorldEnvironment.new()
 	world.environment = environment
 	add_child(world)
+	distant = DistantView.new()
+	distant.configure(self)
+	add_child(distant)
 	actor_meshes.append(_mesh(bridge.actor_geometry(0)))
 	actor_meshes.append(_mesh(bridge.actor_geometry(1)))
 	item_mesh = _mesh(bridge.item_geometry())
@@ -496,6 +504,7 @@ func _process(delta: float) -> void:
 	elif hud.menu.visible and hud.menu.page == "home" and not entering_game:
 		ready_frames += 1
 	hud.equipment_open = industry.opened or industry.build_opened or distillation.opened
+	hud.distant_coverage_ratio = distant.coverage_ratio
 	hud.update_state(state,captured)
 	if not capture_path.is_empty() and not capture_pending:
 		if Time.get_ticks_msec() - started > 120000:
@@ -513,6 +522,11 @@ func _clear_world() -> void:
 	hotbar_cursor = 0
 	terrain_nodes.clear()
 	terrain_pending.clear()
+	terrain_uploaded.clear()
+	terrain_updates_last_frame = 0
+	terrain_total_updates_last_frame = 0
+	terrain_upload_usec_last_frame = 0
+	distant.clear()
 	for child in terrain_root.get_children():
 		terrain_root.remove_child(child)
 		child.queue_free()
@@ -528,10 +542,10 @@ func _rebuild_terrain() -> void:
 	for origin in bridge.take_dirty_chunks():
 		if not bridge.has_chunk(origin):
 			terrain_pending.erase(origin)
-			_remove_terrain(origin)
+			terrain_uploaded.erase(origin)
+			_remove_terrain(origin,true)
 		else:
 			terrain_pending[origin] = true
-	if terrain_pending.is_empty(): return
 	# Coalesce repeated changes and use the latest voxel state when work executes.
 	# Removed chunks never wait behind uploads, and old sessions clear the queue.
 	var origins := terrain_pending.keys()
@@ -544,6 +558,8 @@ func _rebuild_terrain() -> void:
 		terrain_pending.erase(origin)
 		terrain_updates_last_frame += 1
 		var mesh := _mesh(bridge.chunk_geometry(origin))
+		terrain_uploaded[origin] = true
+		distant.section_uploaded(origin)
 		var node: MeshInstance3D = terrain_nodes.get(origin)
 		if mesh.get_surface_count() == 0:
 			_remove_terrain(origin)
@@ -555,12 +571,18 @@ func _rebuild_terrain() -> void:
 			terrain_root.add_child(node)
 			terrain_nodes[origin] = node
 		node.mesh = mesh
+	distant.sync()
+	terrain_total_updates_last_frame = terrain_updates_last_frame
+	if terrain_updates_last_frame==0 or (terrain_updates_last_frame<TERRAIN_UPDATES_PER_FRAME and Time.get_ticks_usec()-started_at<TERRAIN_BUDGET_USEC):
+		if distant.upload_one(): terrain_total_updates_last_frame += 1
+	terrain_upload_usec_last_frame = Time.get_ticks_usec()-started_at
 
-func _remove_terrain(origin: Vector3i) -> void:
+func _remove_terrain(origin: Vector3i, keep_until_replaced: bool = false) -> void:
 	var node: MeshInstance3D = terrain_nodes.get(origin)
 	if is_instance_valid(node):
-		terrain_root.remove_child(node)
-		node.queue_free()
+		if not keep_until_replaced or not distant.retain_unloaded(origin,node):
+			terrain_root.remove_child(node)
+			node.queue_free()
 	terrain_nodes.erase(origin)
 
 func _update_entities() -> void:
@@ -595,6 +617,10 @@ func _update_entities() -> void:
 
 func _capture() -> void:
 	await RenderingServer.frame_post_draw
+	# Record what was actually resident; a capture delay alone is not evidence
+	# that the independent distant stream and worker have finished.
+	var far: Dictionary = distant.stats()
+	print("CAPTURE_DISTANT=",JSON.stringify({"tiles":far.stream.get("tiles",[]).size(),"nodes":far.nodes,"wanted":far.wanted_nodes,"uploaded":far.wanted_uploaded,"roots_covered":far.roots_covered,"roots_total":far.roots_total,"coverage_ratio":far.coverage_ratio,"pending":far.stream.get("pending",0),"in_flight":far.stream.get("in_flight",false),"ready":far.stream.get("ready",false),"outdated":far.outdated,"vertices":far.vertices,"loaded_sections":state.get("loaded_sections",0)}))
 	var image := get_viewport().get_texture().get_image()
 	var error := image.save_png(capture_path)
 	if error != OK: push_error("Capture save failed: %s" % error)

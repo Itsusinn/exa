@@ -1,3 +1,4 @@
+pub mod distant;
 pub mod identity;
 pub mod local_server;
 pub mod mesh;

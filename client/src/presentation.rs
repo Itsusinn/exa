@@ -455,10 +455,16 @@ pub fn terrain_chunk(model: &Client3d, origin: [i32; 3]) -> Mesh {
                 let p = [x as i32 - 1, y as i32 - 1, z as i32 - 1];
                 let section = p.map(|v| (v.div_euclid(16) + 1) as usize);
                 let local = p.map(|v| v.rem_euclid(16) as usize);
-                let b = sections[section[0] + 3 * (section[2] + 3 * section[1])]
-                    .map_or(255, |blocks| {
-                        blocks[local[0] + 16 * (local[2] + 16 * local[1])]
-                    });
+                let b = sections[section[0] + 3 * (section[2] + 3 * section[1])].map_or_else(
+                    || {
+                        model.distant.fine_block([
+                            origin[0] + p[0],
+                            origin[1] + p[1],
+                            origin[2] + p[2],
+                        ])
+                    },
+                    |blocks| blocks[local[0] + 16 * (local[2] + 16 * local[1])],
+                );
                 halo[x + 18 * (z + 18 * y)] = !matches!(b, AIR | WATER | 255);
             }
         }
@@ -497,32 +503,7 @@ pub fn terrain_chunk(model: &Client3d, origin: [i32; 3]) -> Mesh {
                     if y == 0 && face == 2 {
                         continue;
                     }
-                    let (color, pattern) = match block {
-                        GRASS if face == 3 => ([0.46, 0.62, 0.32], 3),
-                        GRASS | DIRT => ([0.48, 0.36, 0.24], 3),
-                        STONE => ([0.56, 0.58, 0.53], 2),
-                        WOOD => ([0.43, 0.32, 0.21], 1),
-                        LEAVES => ([0.33, 0.51, 0.27], 4),
-                        WATER => ([0.29, 0.49, 0.58], 0),
-                        PLANK => ([0.65, 0.51, 0.33], 1),
-                        CHEST => ([0.62, 0.39, 0.18], if face == 5 { 6 } else { 5 }),
-                        SAND => ([0.78, 0.70, 0.49], 7),
-                        SANDSTONE => ([0.69, 0.56, 0.36], 8),
-                        GRAVEL => ([0.48, 0.48, 0.44], 9),
-                        CLAY => ([0.47, 0.43, 0.36], 7),
-                        SNOW => ([0.90, 0.94, 0.96], 10),
-                        ICE => ([0.53, 0.75, 0.84], 11),
-                        MOSS_STONE => ([0.36, 0.45, 0.28], 8),
-                        BASALT => ([0.24, 0.26, 0.28], 8),
-                        BIRCH_WOOD => ([0.82, 0.81, 0.70], 12),
-                        BIRCH_LEAVES => ([0.52, 0.63, 0.28], 13),
-                        PINE_WOOD => ([0.34, 0.24, 0.17], 12),
-                        PINE_LEAVES => ([0.19, 0.34, 0.26], 13),
-                        COAL_ORE => ([0.17, 0.18, 0.19], 14),
-                        IRON_ORE => ([0.65, 0.43, 0.30], 14),
-                        COPPER_ORE => ([0.41, 0.64, 0.48], 14),
-                        _ => ([0.5, 0.5, 0.5], 0),
-                    };
+                    let (color, pattern) = terrain_finish(block, face);
                     mesh.block_face(
                         [x as f32, y as f32, z as f32],
                         [1.0; 3],
@@ -598,6 +579,35 @@ pub fn terrain_chunk(model: &Client3d, origin: [i32; 3]) -> Mesh {
         }
     }
     mesh
+}
+
+pub(crate) fn terrain_finish(block: u8, face: usize) -> ([f32; 3], u32) {
+    match block {
+        GRASS if face == 3 => ([0.46, 0.62, 0.32], 3),
+        GRASS | DIRT => ([0.48, 0.36, 0.24], 3),
+        STONE => ([0.56, 0.58, 0.53], 2),
+        WOOD => ([0.43, 0.32, 0.21], 1),
+        LEAVES => ([0.33, 0.51, 0.27], 4),
+        WATER => ([0.29, 0.49, 0.58], 0),
+        PLANK => ([0.65, 0.51, 0.33], 1),
+        CHEST => ([0.62, 0.39, 0.18], if face == 5 { 6 } else { 5 }),
+        SAND => ([0.78, 0.70, 0.49], 7),
+        SANDSTONE => ([0.69, 0.56, 0.36], 8),
+        GRAVEL => ([0.48, 0.48, 0.44], 9),
+        CLAY => ([0.47, 0.43, 0.36], 7),
+        SNOW => ([0.90, 0.94, 0.96], 10),
+        ICE => ([0.53, 0.75, 0.84], 11),
+        MOSS_STONE => ([0.36, 0.45, 0.28], 8),
+        BASALT => ([0.24, 0.26, 0.28], 8),
+        BIRCH_WOOD => ([0.82, 0.81, 0.70], 12),
+        BIRCH_LEAVES => ([0.52, 0.63, 0.28], 13),
+        PINE_WOOD => ([0.34, 0.24, 0.17], 12),
+        PINE_LEAVES => ([0.19, 0.34, 0.26], 13),
+        COAL_ORE => ([0.17, 0.18, 0.19], 14),
+        IRON_ORE => ([0.65, 0.43, 0.30], 14),
+        COPPER_ORE => ([0.41, 0.64, 0.48], 14),
+        _ => ([0.5, 0.5, 0.5], 0),
+    }
 }
 
 fn corner_occlusion(a: bool, b: bool, diagonal: bool) -> f32 {
@@ -837,11 +847,12 @@ mod tests {
                         }
                         for port in equipment_ports(&device) {
                             let along = port.normal.iter().position(|n| *n != 0).unwrap();
-                            assert!(mesh
-                                .vertices
-                                .iter()
-                                .any(|v| (0..3).all(|i| (v.position[i] - port.position[i]).abs()
-                                    <= if i == along { 1e-5 } else { 0.126 })));
+                            assert!(mesh.vertices.iter().any(|v| {
+                                (0..3).all(|i| {
+                                    (v.position[i] - port.position[i]).abs()
+                                        <= if i == along { 1e-5 } else { 0.126 }
+                                })
+                            }));
                         }
                     }
                 }
@@ -889,11 +900,12 @@ mod tests {
                 }
                 for p in equipment_ports(&d) {
                     let along = p.normal.iter().position(|n| *n != 0).unwrap();
-                    assert!(mesh
-                        .vertices
-                        .iter()
-                        .any(|v| (0..3).all(|i| (v.position[i] - p.position[i]).abs()
-                            <= if i == along { 1e-5 } else { 0.126 })));
+                    assert!(mesh.vertices.iter().any(|v| {
+                        (0..3).all(|i| {
+                            (v.position[i] - p.position[i]).abs()
+                                <= if i == along { 1e-5 } else { 0.126 }
+                        })
+                    }));
                 }
             }
         }

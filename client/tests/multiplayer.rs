@@ -102,7 +102,42 @@ async fn stalled_authority_bounds_client_inputs_and_resumes_without_disconnect()
 
 #[tokio::test]
 async fn player_commands_sync_flight_teleport_and_private_feedback_over_quic() {
+    struct Diagnostics {
+        stage: &'static str,
+        commander: String,
+        observer: String,
+    }
+    let started = std::time::Instant::now();
+    let diagnostics = Arc::new(std::sync::Mutex::new(Diagnostics {
+        stage: "starting",
+        commander: String::new(),
+        observer: String::new(),
+    }));
+    macro_rules! stage {
+        ($name:literal) => {{
+            diagnostics.lock().unwrap().stage = $name;
+            eprintln!(
+                "COMMAND_STAGE {:.3}s {}",
+                started.elapsed().as_secs_f64(),
+                $name
+            );
+        }};
+    }
+    fn model_summary(model: &exa_client_core::voxel::Client3d) -> String {
+        format!(
+            "pos={:?} ready={} flying={} near={} nearby_known={} far={} epoch={} log={:?}",
+            model.body.position,
+            model.ready,
+            model.flying,
+            model.terrain.blocks.len(),
+            model.terrain.nearby_known(model.body.position),
+            model.distant.tiles.len(),
+            model.distant.epoch,
+            model.log
+        )
+    }
     tokio::time::timeout(Duration::from_secs(20), async {
+        stage!("creating authority");
         let (endpoint, cert) = make_server_endpoint("127.0.0.1:0".parse().unwrap()).unwrap();
         let address = endpoint.local_addr().unwrap();
         let manager = Arc::new(Mutex::new(VoxelWorld::new(12345).unwrap()));
@@ -114,29 +149,54 @@ async fn player_commands_sync_flight_teleport_and_private_feedback_over_quic() {
         let (mut send, mut recv) = c1.open_bi().await.unwrap();
         let id = login(&mut send, &mut recv, "Commander").await;
         let initial_spawn = snapshot(&mut recv, 0).await.body.position;
+        diagnostics.lock().unwrap().commander = format!("id={id} initial_spawn={initial_spawn:?}");
+        stage!("commander logged in; connecting observer");
         let (_e2, c2) = connect_endpoint(address, cert).await.unwrap();
         let (mut send2, mut recv2) = c2.open_bi().await.unwrap();
         login(&mut send2, &mut recv2, "Observer").await;
+        stage!("observer logged in; enabling flight");
         // Keep the observer receive stream owned and drained throughout the test.
+        let observer_diagnostics = diagnostics.clone();
+        let (occupied_sender, occupied_receiver) = oneshot::channel();
+        let (returned_sender, returned_receiver) = tokio::sync::watch::channel(None::<[f32; 3]>);
+        let observer_teleport_ack = format!("已传送至 {:.2} {:.2} {:.2}。",initial_spawn[0],initial_spawn[1],initial_spawn[2]);
         let observer = tokio::spawn(async move {
+            let mut occupied_sender = Some(occupied_sender);
             let mut saw_destination = false;
             let mut saw_spawn = false;
             let mut saw_chat = false;
+            let mut snapshots = 0;
+            let mut distant_messages = 0;
             while let Ok(message) = read_message(&mut recv2).await {
+                if matches!(&message, ServerMessage::DistantTile { .. }) { distant_messages += 1; }
                 if let ServerMessage::World3d(s) = message {
+                    snapshots += 1;
+                    let before = (saw_destination,saw_spawn,saw_chat);
                     assert!(!s.log.iter().any(|e| e.text.contains("未知指令")
                         || e.text.contains("飞行已开启")
-                        || e.text.contains("已传送至")
+                        || (e.text.contains("已传送至") && e.text != observer_teleport_ack)
                         || e.text.contains("已返回出生点")));
-                    saw_spawn |= saw_destination
+                    // Only this observer's own teleport may appear in its private
+                    // feedback. Commander command replies remain private.
+                    if exa_simulation::distance(s.body.position,initial_spawn)<0.02
+                        && s.log.iter().any(|e|e.text==observer_teleport_ack) {
+                        if let Some(sender) = occupied_sender.take() { let _ = sender.send(s.body.position); }
+                    }
+                    let expected_return = *returned_receiver.borrow();
+                    saw_spawn |= saw_destination && expected_return.is_some()
                         && s.actors.iter().any(|a| {
-                            a.id == id && exa_simulation::distance(a.position, initial_spawn) < 0.02
+                            a.id == id && expected_return.is_some_and(|p| exa_simulation::distance(a.position,p)<0.02)
                         });
                     saw_destination |= s
                         .actors
                         .iter()
                         .any(|a| a.id == id && a.position[0] < -200.0);
                     saw_chat |= s.log.iter().any(|e| e.text.contains("public message"));
+                    let actor = s.actors.iter().find(|a| a.id==id).map(|a| a.position);
+                    observer_diagnostics.lock().unwrap().observer = format!("snapshots={snapshots} distant={distant_messages} commander={actor:?} own_pos={:?} expected_return={expected_return:?} initial_spawn={initial_spawn:?} destination={saw_destination} returned={saw_spawn} chat={saw_chat}",s.body.position);
+                    if before!=(saw_destination,saw_spawn,saw_chat) {
+                        eprintln!("COMMAND_OBSERVER {:.3}s {:?}",started.elapsed().as_secs_f64(),observer_diagnostics.lock().unwrap().observer);
+                    }
                     if saw_spawn && saw_chat {
                         return;
                     }
@@ -154,10 +214,12 @@ async fn player_commands_sync_flight_teleport_and_private_feedback_over_quic() {
         .unwrap();
         let start = loop {
             let s = snapshot(&mut recv, 0).await;
+            diagnostics.lock().unwrap().commander = format!("flight_wait pos={:?} seq={} flying={} log={:?}",s.body.position,s.seq,s.flying,s.log);
             if s.flying {
                 break s.body.position;
             }
         };
+        stage!("flight acknowledged; sending ascent");
         write_message(
             &mut send,
             &ClientMessage::Input3d {
@@ -173,6 +235,7 @@ async fn player_commands_sync_flight_teleport_and_private_feedback_over_quic() {
         .unwrap();
         let airborne = snapshot(&mut recv, 1).await;
         assert!(airborne.body.position[1] > start[1] + 0.3);
+        stage!("ascent acknowledged; waiting command cooldown");
         tokio::time::sleep(Duration::from_millis(600)).await;
         write_message(
             &mut send,
@@ -182,6 +245,7 @@ async fn player_commands_sync_flight_teleport_and_private_feedback_over_quic() {
         )
         .await
         .unwrap();
+        stage!("teleport sent; waiting destination nearby-known");
         let mut model = exa_client_core::voxel::Client3d::default();
         model.apply(ServerMessage::Welcome3d {
             player_id: id,
@@ -190,6 +254,7 @@ async fn player_commands_sync_flight_teleport_and_private_feedback_over_quic() {
         });
         loop {
             model.apply(read_message(&mut recv).await.unwrap());
+            diagnostics.lock().unwrap().commander = model_summary(&model);
             assert!(model.terrain.blocks.len() <= MAX_LOADED_SECTIONS);
             if model.body.position[0] < -200.0 && model.terrain.nearby_known(model.body.position) {
                 break;
@@ -197,6 +262,16 @@ async fn player_commands_sync_flight_teleport_and_private_feedback_over_quic() {
         }
         assert_eq!(model.body.position, [-200.5, 110.0, 300.5]);
         assert!(model.flying);
+        // Make the alternative-spawn rule deterministic: the other player now
+        // occupies the exact original spawn. /spawn must choose another safe
+        // location instead of returning to a fixed coordinate or overlapping it.
+        stage!("destination ready; observer occupies original spawn");
+        write_message(&mut send2,&ClientMessage::Chat3d {
+            text:format!("/tp {} {} {}",initial_spawn[0],initial_spawn[1],initial_spawn[2]),
+        }).await.unwrap();
+        let occupied_position = occupied_receiver.await.unwrap();
+        assert!(exa_simulation::distance(occupied_position,initial_spawn)<0.02);
+        stage!("destination ready; sending malformed command");
         write_message(
             &mut send,
             &ClientMessage::Chat3d {
@@ -207,10 +282,12 @@ async fn player_commands_sync_flight_teleport_and_private_feedback_over_quic() {
         .unwrap();
         loop {
             let s = snapshot(&mut recv, 1).await;
+            diagnostics.lock().unwrap().commander = format!("unknown_wait pos={:?} seq={} log={:?}",s.body.position,s.seq,s.log);
             if s.log.iter().any(|e| e.text.contains("未知指令")) {
                 break;
             }
         }
+        stage!("private malformed feedback received; sending public chat and descent");
         write_message(
             &mut send,
             &ClientMessage::Chat3d {
@@ -233,6 +310,7 @@ async fn player_commands_sync_flight_teleport_and_private_feedback_over_quic() {
         .await
         .unwrap();
         assert!(snapshot(&mut recv, 2).await.body.position[1] < 110.0);
+        stage!("descent acknowledged; waiting spawn cooldown");
         tokio::time::sleep(Duration::from_millis(600)).await;
         write_message(
             &mut send,
@@ -242,24 +320,43 @@ async fn player_commands_sync_flight_teleport_and_private_feedback_over_quic() {
         )
         .await
         .unwrap();
+        stage!("spawn sent; waiting private acknowledgement and safe return area");
+        let mut returned_position = None;
         loop {
             model.apply(read_message(&mut recv).await.unwrap());
+            diagnostics.lock().unwrap().commander = model_summary(&model);
             assert!(model.terrain.blocks.len() <= MAX_LOADED_SECTIONS);
-            if exa_simulation::distance(model.body.position, initial_spawn) < 0.02
-                && model.terrain.nearby_known(model.body.position)
-            {
-                break;
+            if returned_position.is_none() && model.log.iter().any(|entry| entry.text.contains("已返回出生点")) {
+                let position = model.body.position;
+                assert!(exa_simulation::distance(position,initial_spawn)<=32.0,"spawn returns to the initial spawn region");
+                assert!(exa_simulation::distance(position,occupied_position)>0.5,"occupied original spawn must not be reused");
+                let acknowledgement = format!("已返回出生点 {:.2} {:.2} {:.2}。",position[0],position[1],position[2]);
+                assert!(model.log.iter().any(|entry|entry.text==acknowledgement),"private acknowledgement describes the authoritative return position");
+                returned_sender.send(Some(position)).unwrap();
+                returned_position = Some(position);
+                eprintln!("COMMAND_RETURN {:.3}s initial={initial_spawn:?} occupied={occupied_position:?} actual={position:?}",started.elapsed().as_secs_f64());
+            }
+            if let Some(position) = returned_position {
+                if exa_simulation::distance(model.body.position,position)<0.02 && model.terrain.nearby_known(position) {
+                    assert!(!exa_simulation::overlaps_grid(position,&model.terrain),"returned position is free of terrain");
+                    break;
+                }
             }
         }
         assert!(model.flying);
+        stage!("spawn ready; waiting observer destination-return-chat evidence");
         observer.await.unwrap();
+        stage!("observer passed; shutting down");
         c1.close(0u32.into(), b"done");
         c2.close(0u32.into(), b"done");
         let _ = stop.send(());
         server.await.unwrap().unwrap();
     })
     .await
-    .expect("player commands timed out");
+    .unwrap_or_else(|error| {
+        let last = diagnostics.lock().unwrap();
+        panic!("player commands timed out: {error}; elapsed={:?}; stage={}; commander={}; observer={}",started.elapsed(),last.stage,last.commander,last.observer);
+    });
 }
 
 #[tokio::test]

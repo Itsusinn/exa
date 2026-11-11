@@ -88,10 +88,18 @@ pub(super) fn ensure_column(map: &mut Grid, seed: u64, c: [i32; 2]) -> anyhow::R
     if map.has_column(c) || !valid_column(c) {
         return Ok(());
     }
-    let mut blocks = ecology::column(seed, c);
-    structures::apply_column(seed, c, &mut blocks)?;
+    let blocks = build_column(seed, c)?;
     for (y, section) in blocks.as_chunks::<4096>().0.iter().enumerate() {
         map.apply_chunk([c[0] * 16, y as i32 * 16, c[1] * 16], section);
     }
     Ok(())
+}
+
+/// A pure preview uses exactly the same terrain and structures as exploration.
+/// The caller decides whether to commit these blocks to the world.
+pub(super) fn build_column(seed: u64, c: [i32; 2]) -> anyhow::Result<Vec<u8>> {
+    anyhow::ensure!(valid_column(c), "invalid terrain column");
+    let mut blocks = ecology::column(seed, c);
+    structures::apply_column(seed, c, &mut blocks)?;
+    Ok(blocks)
 }

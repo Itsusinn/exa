@@ -1,7 +1,6 @@
 use super::*;
 
-const HELP: &str =
-    "指令：/spawn；/tp x y z；/fly [on|off]；/industry kit；/industry fill ID 升 [温度K]；/industry charge ID 丁烷mol 戊烷mol 温度K；/industry heat ID 焦耳；/industry drain ID；/help";
+const HELP: &str = "指令：/spawn；/tp x y z；/fly [on|off]；/industry kit；/industry fill ID 升 [温度K]；/industry charge ID 丁烷mol 戊烷mol 温度K；/industry heat ID 焦耳；/industry drain ID；/help";
 
 #[derive(Debug, PartialEq)]
 enum Command {
@@ -24,16 +23,31 @@ fn parse(text: &str, origin: [f32; 3]) -> Result<Command> {
         ["/industry", "fill", id, liters] => parse_fill(id, liters, "293.15"),
         ["/industry", "fill", id, liters, temperature] => parse_fill(id, liters, temperature),
         ["/industry", "charge", id, butane, pentane, temperature] => {
-            let id=id.parse::<u64>().context("设备ID必须为正整数。")?;
-            let amounts=[butane.parse::<f64>().context("丁烷量必须为摩尔数。")?,pentane.parse::<f64>().context("戊烷量必须为摩尔数。")?];
-            let t=temperature.parse::<f64>().context("温度必须为开尔文数值。")?;
-            anyhow::ensure!(id>0&&amounts.iter().all(|n|n.is_finite()&&*n>=0.0&&*n<=1e12)&&amounts.iter().sum::<f64>()>0.0&&t.is_finite(),"无效装料参数。");
-            Ok(Command::IndustryCharge(id,amounts,t))
-        },
+            let id = id.parse::<u64>().context("设备ID必须为正整数。")?;
+            let amounts = [
+                butane.parse::<f64>().context("丁烷量必须为摩尔数。")?,
+                pentane.parse::<f64>().context("戊烷量必须为摩尔数。")?,
+            ];
+            let t = temperature
+                .parse::<f64>()
+                .context("温度必须为开尔文数值。")?;
+            anyhow::ensure!(
+                id > 0
+                    && amounts
+                        .iter()
+                        .all(|n| n.is_finite() && *n >= 0.0 && *n <= 1e12)
+                    && amounts.iter().sum::<f64>() > 0.0
+                    && t.is_finite(),
+                "无效装料参数。"
+            );
+            Ok(Command::IndustryCharge(id, amounts, t))
+        }
         ["/industry", "heat", id, joules] => {
-            let id=id.parse::<u64>().context("设备ID必须为正整数。")?;let j=joules.parse::<f64>().context("能量必须为焦耳数值。")?;
-            anyhow::ensure!(id>0&&j.is_finite()&&j.abs()<=1e15,"无效加热参数。");Ok(Command::IndustryHeat(id,j))
-        },
+            let id = id.parse::<u64>().context("设备ID必须为正整数。")?;
+            let j = joules.parse::<f64>().context("能量必须为焦耳数值。")?;
+            anyhow::ensure!(id > 0 && j.is_finite() && j.abs() <= 1e15, "无效加热参数。");
+            Ok(Command::IndustryHeat(id, j))
+        }
         ["/industry", "drain", id] => Ok(Command::IndustryDrain(
             id.parse().context("设备ID必须为正整数。")?,
         )),
@@ -121,7 +135,9 @@ impl VoxelWorld {
             }
             Command::IndustryFill(equipment, liters, temperature) => {
                 self.exchange_water(id, equipment, Some((liters, temperature)))?;
-                Ok(format!("已向设备 {equipment} 注入 {liters} L 测试水（{temperature} K），外部输入已记账。"))
+                Ok(format!(
+                    "已向设备 {equipment} 注入 {liters} L 测试水（{temperature} K），外部输入已记账。"
+                ))
             }
             Command::IndustryDrain(equipment) => {
                 self.exchange_water(id, equipment, None)?;
@@ -171,8 +187,9 @@ impl VoxelWorld {
                 for z in -1..=1 {
                     for x in -1..=1 {
                         let column = [center[0] + x, center[1] + z];
-                        if valid_column(column) {
+                        if valid_column(column) && !self.terrain.has_column(column) {
                             terrain::ensure_column(&mut self.terrain, self.world_seed, column)?;
+                            self.distant.invalidate(column);
                         }
                     }
                 }

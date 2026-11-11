@@ -99,3 +99,15 @@ static func apply_atmosphere(environment: Environment, enhanced: bool = true) ->
 	environment.fog_depth_curve = 1.6 if enhanced else 1.0
 	# No height or volume fog: short indoor views remain clear, but distant indoor
 	# surfaces still receive distance fog because this effect has no room occlusion.
+
+## The hierarchy covers the 2048m camera range. Keep local views clear and blend
+## only toward the outer horizon. Loading gaps remain explicit pending coverage.
+static func apply_distance_horizon(environment: Environment) -> void:
+	apply_atmosphere(environment,true)
+	environment.fog_depth_begin = 320.0
+	environment.fog_depth_end = 1950.0
+	environment.fog_depth_curve = 2.0
+	environment.fog_density = 1.0
+	# Match the view-dependent sky radiance instead of leaving a bright silhouette
+	# against the darker lower hemisphere when distant geometry reaches full fog.
+	environment.fog_aerial_perspective = 1.0

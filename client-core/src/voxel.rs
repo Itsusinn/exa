@@ -4,6 +4,7 @@ use std::collections::{BTreeSet, VecDeque};
 
 pub struct Client3d {
     pub terrain: Grid,
+    pub distant: crate::distant::DistantCache,
     pub revision: u64,
     pub equipment_revision: u64,
     pub equipment_geometry_revision: u64,
@@ -33,6 +34,7 @@ impl Default for Client3d {
     fn default() -> Self {
         Self {
             terrain: Grid::unknown(),
+            distant: crate::distant::DistantCache::default(),
             revision: 0,
             equipment_revision: 0,
             equipment_geometry_revision: 0,
@@ -75,8 +77,55 @@ impl Client3d {
             }
         }
     }
+    fn dirty_distant_ao(&mut self, column: [i32; 2]) {
+        for y in (0..WORLD_HEIGHT).step_by(16) {
+            for z in -1..=1 {
+                for x in -1..=1 {
+                    let p = [(column[0] + x) * 16, y, (column[1] + z) * 16];
+                    if self.terrain.blocks.contains_key(&p) {
+                        self.dirty_chunks.insert(p);
+                    }
+                }
+            }
+        }
+    }
+
     pub fn apply(&mut self, message: ServerMessage) {
         match message {
+            ServerMessage::DistantView { epoch, center } => {
+                let previous_fine: BTreeSet<_> = self
+                    .distant
+                    .desired
+                    .iter()
+                    .filter(|key| key.stride == 1)
+                    .copied()
+                    .collect();
+                if self.distant.view(epoch, center) {
+                    let current_fine: BTreeSet<_> = self
+                        .distant
+                        .desired
+                        .iter()
+                        .filter(|key| key.stride == 1)
+                        .copied()
+                        .collect();
+                    // fine_block filters the desired set. Both removal and returning
+                    // to a cached fine tile change its contribution to near AO.
+                    for key in previous_fine.symmetric_difference(&current_fine) {
+                        self.dirty_distant_ao([key.origin[0] / 16, key.origin[1] / 16]);
+                    }
+                }
+            }
+            ServerMessage::DistantTile {
+                epoch,
+                key,
+                revision,
+                blocks,
+            } => {
+                if self.distant.insert(epoch, key, revision, blocks) && key.stride == 1 {
+                    // Never add remote render-only blocks to the gameplay Grid.
+                    self.dirty_distant_ao([key.origin[0] / 16, key.origin[1] / 16]);
+                }
+            }
             ServerMessage::UnloadColumn { column } => {
                 if !valid_column(column) {
                     return;
@@ -251,6 +300,77 @@ impl Client3d {
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn render_only_tiles_never_make_unknown_gameplay_space_traversable() {
+        use exa_protocol::*;
+        let mut model = super::Client3d::default();
+        model.apply(ServerMessage::DistantView {
+            epoch: 1,
+            center: [-1, 0],
+        });
+        model.apply(ServerMessage::DistantTile {
+            epoch: 1,
+            key: DistantTileKey {
+                origin: [-16, 0],
+                stride: 1,
+            },
+            revision: 1,
+            blocks: vec![AIR; 32768],
+        });
+        assert_eq!(model.distant.tiles.len(), 1);
+        assert!(model.terrain.blocks.is_empty());
+        assert!(model.terrain.solid([-1, 20, 1]));
+        model.apply(ServerMessage::Welcome3d {
+            player_id: 1,
+            seed: 0,
+            rotation: [0.0; 2],
+        });
+        assert!(model.distant.tiles.is_empty());
+        assert_eq!(model.distant.epoch, 0);
+    }
+
+    #[test]
+    fn fine_tile_membership_changes_invalidate_near_ao_even_when_raw_is_cached() {
+        use exa_protocol::*;
+        let mut model = super::Client3d::default();
+        let tile = DistantTileKey {
+            origin: [0, 0],
+            stride: 1,
+        };
+        let near = [16, 0, 0];
+        model.apply(ServerMessage::Chunk3d {
+            origin: near,
+            blocks: vec![AIR; 4096],
+        });
+        model.apply(ServerMessage::DistantView {
+            epoch: 1,
+            center: [0, 0],
+        });
+        model.apply(ServerMessage::DistantTile {
+            epoch: 1,
+            key: tile,
+            revision: 1,
+            blocks: vec![STONE; 32768],
+        });
+        assert_eq!(model.distant.fine_block([15, 1, 1]), STONE);
+        model.dirty_chunks.clear();
+        model.apply(ServerMessage::DistantView {
+            epoch: 2,
+            center: [10, 0],
+        });
+        assert!(model.distant.tiles.contains_key(&tile));
+        assert_eq!(model.distant.fine_block([15, 1, 1]), 255);
+        assert!(model.dirty_chunks.contains(&near));
+        model.dirty_chunks.clear();
+        model.apply(ServerMessage::DistantView {
+            epoch: 3,
+            center: [0, 0],
+        });
+        assert_eq!(model.distant.fine_block([15, 1, 1]), STONE);
+        assert!(model.dirty_chunks.contains(&near));
+        assert_eq!(model.terrain.get([16, 1, 1]), AIR);
+        assert!(model.terrain.solid([15, 1, 1]));
+    }
     use super::*;
     #[test]
     fn process_updates_keep_prediction_but_geometry_changes_replay() {

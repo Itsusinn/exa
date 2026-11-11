@@ -98,6 +98,10 @@ godot-surface-details:
 godot-weathering:
     cargo +nightly -Zscript scripts/godot.rs weathering
 
+# 权威远景派生、近远交接与真实生态图形验收
+godot-distant:
+    cargo +nightly -Zscript scripts/godot.rs distant
+
 # 使用隔离服务端检查两个 Godot 桥接实例联机
 godot-multiplayer:
     cargo +nightly -Zscript scripts/godot.rs multiplayer

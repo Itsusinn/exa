@@ -644,13 +644,11 @@ impl VoxelWorld {
                 })
                 .cloned()
                 .collect();
-            if p.tx
-                .try_send(ServerMessage::EquipmentState {
-                    revision: self.industry_revision,
-                    devices,
-                })
-                .is_err()
-            {
+            if let Err(error) = p.tx.try_send(ServerMessage::EquipmentState {
+                revision: self.industry_revision,
+                devices,
+            }) {
+                tracing::warn!(player_id=id,tick=self.tick,capacity=p.tx.capacity(),error=%error,"equipment queue unavailable; disconnecting peer");
                 slow.push(id);
             } else {
                 p.industry_revision = Some(self.industry_revision);

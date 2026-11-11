@@ -47,6 +47,8 @@ var fov_slider: HSlider
 var gi_toggle: CheckButton
 var inventory_open := false
 var health_bar: ProgressBar
+var distant_loading: Label
+var distant_coverage_ratio := 1.0
 
 func _ready() -> void:
 	var theme := Palette.create()
@@ -66,6 +68,16 @@ func _ready() -> void:
 	bar_style.border_color = Color(0.8,0.82,0.72,0.16)
 	top.add_theme_stylebox_override("panel",bar_style)
 	root.add_child(top)
+	distant_loading = Label.new()
+	distant_loading.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT)
+	distant_loading.offset_left = -300
+	distant_loading.offset_right = -22
+	distant_loading.offset_top = 86
+	distant_loading.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	distant_loading.add_theme_font_size_override("font_size",14)
+	distant_loading.modulate = Color(0.9,0.93,0.9,0.75)
+	distant_loading.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	root.add_child(distant_loading)
 	var vitals := HBoxContainer.new()
 	vitals.add_theme_constant_override("separation", 30)
 	top.add_child(vitals)
@@ -175,6 +187,8 @@ func update_state(state: Dictionary, captured: bool) -> void:
 	var held: Dictionary = state.inventory_slots[state.selected_slot]
 	held_name.text = "空手" if held.is_empty() else held.name
 	top.visible = state.ready and not menu.visible
+	distant_loading.visible = state.ready and not state.demo and not menu.visible and distant_coverage_ratio<0.999999
+	distant_loading.text = "远景逐步加载 · %d%%" % floori(distant_coverage_ratio*100.0)
 	top.offset_left = -440 if state.get("flying", false) else -338
 	health.text = "HP   %03d / 100" % state.hp if state.ready else ""
 	if state.get("flying", false): health.text += "  ·  飞行"

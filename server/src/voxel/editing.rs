@@ -89,6 +89,8 @@ impl VoxelWorld {
         };
         // Commit terrain, container and inventory together after all checks pass.
         self.terrain.set(position, block);
+        self.distant
+            .invalidate([position[0].div_euclid(16), position[2].div_euclid(16)]);
         if c.expected == CHEST && !c.place {
             self.containers.remove(&position);
             for player in self.players.values_mut() {
@@ -134,7 +136,13 @@ impl VoxelWorld {
                     }
                     _ => false,
                 })
-                .any(|m| p.tx.try_send(m.clone()).is_err())
+                .any(|m| match p.tx.try_send(m.clone()) {
+                    Ok(()) => false,
+                    Err(error) => {
+                        tracing::warn!(player_id=id,tick=self.tick,capacity=p.tx.capacity(),error=%error,"terrain update queue unavailable; disconnecting peer");
+                        true
+                    }
+                })
             {
                 slow.push(id);
             }

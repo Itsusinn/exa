@@ -29,6 +29,7 @@ const ACTIONS: &[&str] = &[
     "lighting",
     "surface-details",
     "weathering",
+    "distant",
     "export-debug",
     "export-release",
     "multiplayer",
@@ -111,8 +112,19 @@ fn execute() -> Result {
             scenario(&godot, &project, "smoke", true)
         }
         "multiplayer" => multiplayer(&repo, &target, &godot),
-        "visuals" | "lighting" | "surface-details" | "weathering" => {
-            if action == "weathering" {
+        "visuals" | "lighting" | "surface-details" | "weathering" | "distant" => {
+            if action == "distant" {
+                run(cargo(&repo).args([
+                    "test",
+                    "-p",
+                    "exa-client",
+                    "--test",
+                    "distant",
+                    "--jobs",
+                    "2",
+                ]))?;
+            }
+            if matches!(action, "weathering" | "distant") {
                 run(cargo(&repo).args([
                     "test",
                     "-p",
@@ -125,6 +137,10 @@ fn execute() -> Result {
             run(godot
                 .command(&project)?
                 .args(["--headless", "--editor", "--import", "--quit"]))?;
+            if action == "distant" {
+                scenario(&godot, &project, "distant_coverage", true)?;
+                scenario(&godot, &project, "distant_handoff", true)?;
+            }
             scenario(&godot, &project, &action.replace('-', "_"), false)
         }
         "industry-models" | "industry-models-graphics" => {

@@ -70,6 +70,7 @@ impl VoxelWorld {
                         break;
                     }
                     generation_budget -= 1;
+                    self.distant.invalidate(c);
                 }
                 let mut sent = true;
                 for y in (0..WORLD_HEIGHT).step_by(16) {

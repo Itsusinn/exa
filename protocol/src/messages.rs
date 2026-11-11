@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u32 = 18;
+pub const PROTOCOL_VERSION: u32 = 20;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ClientMessage {
@@ -29,6 +29,17 @@ pub enum ClientMessage {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ServerMessage {
+    /// Display-only terrain, separate from the authoritative nearby voxel grid.
+    DistantView {
+        epoch: u64,
+        center: [i32; 2],
+    },
+    DistantTile {
+        epoch: u64,
+        key: crate::DistantTileKey,
+        revision: u64,
+        blocks: Vec<u8>,
+    },
     Distillation(crate::DistillationReply),
     PipeRouteReply(crate::PipeRouteReply),
     AssemblyReport(crate::AssemblyReport),

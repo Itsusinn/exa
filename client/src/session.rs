@@ -23,6 +23,7 @@ pub struct Session {
     pub status: String,
     pub demo: bool,
     pub generation: u64,
+    pub distant_mesher: crate::distant::Mesher,
     pub equipment_axis: u8,
     pub tank_size: TankSize,
     pub column_design: Option<ColumnDesign>,
@@ -63,6 +64,7 @@ impl Default for Session {
             status: "Connect to explore the 3D world.".into(),
             demo: false,
             generation: 0,
+            distant_mesher: crate::distant::Mesher::default(),
             equipment_axis: 0,
             tank_size: TankSize::default(),
             column_design: None,
@@ -156,6 +158,7 @@ impl Session {
         }
         self.retire_transport();
         self.model = Client3d::default();
+        self.distant_mesher.reset();
         self.demo = false;
         self.equipment_axis = 0;
         self.tank_size = TankSize::default();
@@ -214,6 +217,12 @@ impl Session {
             for _ in 0..256 {
                 match t.poll() {
                     Some(NetworkEvent::Message(m)) => {
+                        if matches!(&m, ServerMessage::Welcome3d { .. }) {
+                            // A welcome starts a new world identity even if the transport
+                            // remains open; old worker epochs/revisions may otherwise alias.
+                            self.generation += 1;
+                            self.distant_mesher.reset();
+                        }
                         self.model.apply(m);
                         if self.model.ready {
                             self.status = "Connected / 3D world".into();
@@ -231,6 +240,8 @@ impl Session {
         if disconnected {
             self.retire_transport();
             self.model.ready = false;
+            self.model.distant = Default::default();
+            self.distant_mesher.reset();
             self.model.terrain.equipment.clear();
             self.model.equipment_revision += 1;
             self.generation += 1;
@@ -253,6 +264,7 @@ impl Session {
             self.accept_distillation_reply(reply);
         }
         self.flush_distillation_cancel();
+        self.distant_mesher.pump(&mut self.model, self.generation);
     }
     pub fn open_distillation(&mut self) -> bool {
         if !self.model.ready || self.demo || self.model.hp <= 0 {

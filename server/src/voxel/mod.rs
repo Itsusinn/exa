@@ -1,6 +1,7 @@
 mod assembly;
 mod commands;
 mod containers;
+pub(crate) mod distant;
 mod editing;
 mod industry;
 mod inventory;
@@ -26,6 +27,7 @@ use std::{
 use tokio::sync::mpsc;
 
 struct Player {
+    distant: distant::View,
     sent_columns: BTreeSet<[i32; 2]>,
     industry_columns: BTreeSet<[i32; 2]>,
     industry_revision: Option<u64>,
@@ -46,6 +48,7 @@ struct Player {
     received: u32,
     inbox: VecDeque<(u32, PlayerInput)>,
     tx: mpsc::Sender<ServerMessage>,
+    distant_tx: Option<mpsc::Sender<ServerMessage>>,
     inventory: PlayerInventory,
     attack_tick: u64,
     open_container: Option<[i32; 3]>,
@@ -69,6 +72,7 @@ pub struct VoxelWorld {
     next_id: u32,
     tick: u64,
     dirty_chunks: BTreeSet<[i32; 3]>,
+    distant: distant::State,
     containers: BTreeMap<[i32; 3], ContainerSnapshot>,
     saved_players: BTreeMap<[u8; 16], crate::player_data::PlayerData>,
     save_path: Option<std::path::PathBuf>,
@@ -191,6 +195,7 @@ impl VoxelWorld {
             next_id: 1,
             tick: 0,
             dirty_chunks: BTreeSet::new(),
+            distant: distant::State::default(),
             containers,
             saved_players: BTreeMap::new(),
             save_path: None,
@@ -221,6 +226,7 @@ impl VoxelWorld {
         self.players.insert(
             id,
             Player {
+                distant: distant::View::default(),
                 sent_columns: BTreeSet::new(),
                 industry_columns: BTreeSet::new(),
                 industry_revision: None,
@@ -245,6 +251,7 @@ impl VoxelWorld {
                 received: 0,
                 inbox: VecDeque::new(),
                 tx,
+                distant_tx: None,
                 inventory: PlayerInventory::default(),
                 attack_tick: 0,
                 open_container: None,
@@ -469,23 +476,21 @@ impl VoxelWorld {
         actors.sort_by_key(|a| a.id);
         let mut slow = Vec::new();
         for (&id, p) in &self.players {
-            if p.tx
-                .try_send(ServerMessage::World3d(Snapshot3d {
-                    seq: p.last_seq,
-                    body: p.body,
-                    flying: p.flying,
-                    actors: actors.clone(),
-                    items: self.items.clone(),
-                    hp: p.hp,
-                    inventory: p.inventory.clone(),
-                    log: self.player_log(p),
-                    container: p
-                        .open_container
-                        .and_then(|pos| self.containers.get(&pos).cloned()),
-                    container_error: p.container_error.clone(),
-                }))
-                .is_err()
-            {
+            if let Err(error) = p.tx.try_send(ServerMessage::World3d(Snapshot3d {
+                seq: p.last_seq,
+                body: p.body,
+                flying: p.flying,
+                actors: actors.clone(),
+                items: self.items.clone(),
+                hp: p.hp,
+                inventory: p.inventory.clone(),
+                log: self.player_log(p),
+                container: p
+                    .open_container
+                    .and_then(|pos| self.containers.get(&pos).cloned()),
+                container_error: p.container_error.clone(),
+            })) {
+                tracing::warn!(player_id=id,tick=self.tick,capacity=p.tx.capacity(),error=%error,"live snapshot queue unavailable; disconnecting peer");
                 slow.push(id);
             }
         }
@@ -566,7 +571,10 @@ impl VoxelWorld {
     pub fn load(path: &Path) -> Result<Self> {
         Self::validate_generation()?;
         let bytes = std::fs::read(path).context("read 3D world")?;
-        anyhow::ensure!(bytes.starts_with(b"DNG3D001"),"not a 3D save; legacy 2D saves are preserved and require explicit migration. Use a new EXA_SAVE_PATH");
+        anyhow::ensure!(
+            bytes.starts_with(b"DNG3D001"),
+            "not a 3D save; legacy 2D saves are preserved and require explicit migration. Use a new EXA_SAVE_PATH"
+        );
         let saved: Save = rmp_serde::from_slice(&bytes[8..]).context("decode 3D world")?;
         anyhow::ensure!(
             matches!(saved.version, 1..=13)

@@ -851,6 +851,92 @@ impl GameBridge {
             .contains_key(&[origin.x, origin.y, origin.z])
     }
 
+    /// Read-only render residency; these tiles are never gameplay/collision data.
+    #[func]
+    fn distant_state(&self) -> VarDictionary {
+        let cache = &self.session.model.distant;
+        let mesher = &self.session.distant_mesher;
+        let tiles: Array<VarDictionary> = cache
+            .tiles
+            .iter()
+            .map(|(c, d)| {
+                vdict! { "key" => tile_key(*c), "stride" => i64::from(c.stride),
+                "revision" => d.revision as i64, "mesh_revision" => d.mesh_revision as i64,
+                "desired" => cache.desired.contains(c), "leaf" => cache.leaves.contains(c) }
+            })
+            .collect();
+        let roots: Array<Vector3i> = cache.roots.iter().copied().map(tile_key).collect();
+        let wanted: Array<Vector3i> = cache.desired.iter().copied().map(tile_key).collect();
+        let leaves: Array<Vector3i> = cache.leaves.iter().copied().map(tile_key).collect();
+        let split: Array<Vector3i> = cache
+            .desired
+            .difference(&cache.leaves)
+            .copied()
+            .map(tile_key)
+            .collect();
+        vdict! { "generation" => self.session.generation as i64, "epoch" => cache.epoch as i64,
+        "center" => Vector2i::new(cache.center[0], cache.center[1]), "tiles" => &tiles,
+        "roots" => &roots, "wanted" => &wanted, "leaves" => &leaves, "split" => &split,
+        "wanted_count" => cache.desired.len() as i64, "cached_count" => cache.tiles.len() as i64,
+        "pending" => cache.dirty.len() as i64, "in_flight" => i64::from(mesher.in_flight()),
+        "ready" => i64::from(mesher.ready()), "raw_bytes" => cache.raw_bytes() as i64,
+        "max_fine_vertices" => exa_client::distant::MAX_FINE_VERTICES as i64,
+        "max_coarse_vertices" => exa_client::distant::MAX_COARSE_VERTICES as i64,
+        "max_cached_tiles" => exa_protocol::MAX_CACHED_TILES as i64,
+        "max_raw_bytes" => exa_protocol::MAX_DISTANT_CACHE_BYTES as i64,
+        "discarded" => mesher.discarded as i64,
+        "error" => mesher.error.as_deref().unwrap_or("") }
+    }
+
+    /// Inspect the next result without consuming it, for a full GPU cache's
+    /// replacement/eviction decision. The zero vector is not a valid tile key.
+    #[func]
+    fn distant_ready_key(&mut self) -> Vector3i {
+        let session = &mut self.session;
+        session
+            .distant_mesher
+            .peek_key(&mut session.model, session.generation)
+            .map_or(Vector3i::ZERO, |key| tile_key(key.tile))
+    }
+
+    /// A full GPU cache can request a ready fine mesh to yield to a coarsening
+    /// replacement. The yielded mesh remains dirty and is regenerated afterwards.
+    #[func]
+    fn prioritize_distant_mesh(&mut self, key: Vector3i) -> bool {
+        let Ok(stride) = u8::try_from(key.y) else {
+            return false;
+        };
+        let tile = exa_protocol::DistantTileKey {
+            origin: [key.x, key.z],
+            stride,
+        };
+        let session = &mut self.session;
+        session
+            .distant_mesher
+            .prioritize(&mut session.model, session.generation, tile)
+    }
+
+    /// Returns at most one completed CPU mesh. Never waits for the worker.
+    #[func]
+    fn take_distant_mesh(&mut self) -> VarDictionary {
+        let session = &mut self.session;
+        let Some(result) = session
+            .distant_mesher
+            .take(&mut session.model, session.generation)
+        else {
+            return VarDictionary::new();
+        };
+        let key = result.key;
+        let vertices_count = result.mesh.vertices.len();
+        let mesh_geometry = geometry(result.mesh);
+        vdict! { "generation" => key.generation as i64, "epoch" => key.epoch as i64,
+        "key" => tile_key(key.tile), "stride" => i64::from(key.tile.stride),
+        "revision" => key.revision as i64, "mesh_revision" => key.mesh_revision as i64,
+        "effective_stride" => i64::from(result.effective_stride),
+            "degraded" => result.effective_stride > u16::from(key.tile.stride), "vertices_count" => vertices_count as i64,
+            "geometry" => &mesh_geometry }
+    }
+
     #[func]
     fn chunk_geometry(&self, origin: Vector3i) -> VarDictionary {
         let origin = [origin.x, origin.y, origin.z];
@@ -1080,6 +1166,10 @@ fn game_model_for_actor(kind: i32) -> exa_client::session::Model {
         max_hp: 100,
     });
     m
+}
+
+fn tile_key(key: exa_protocol::DistantTileKey) -> Vector3i {
+    Vector3i::new(key.origin[0], i32::from(key.stride), key.origin[1])
 }
 
 fn geometry(mesh: Mesh) -> VarDictionary {

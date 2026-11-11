@@ -10,6 +10,7 @@ use tracing_futures::Instrument;
 use exa_protocol::{ClientMessage, ServerMessage};
 
 use crate::voxel::VoxelWorld;
+mod distant;
 mod distillation;
 use distillation::DesignService;
 type IndustryJob =
@@ -80,6 +81,7 @@ pub async fn serve_endpoint(
     industry_clock.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut industry_job: Option<IndustryJob> = None;
     let designer = Arc::new(Mutex::new(DesignService::default()));
+    let mut distant = distant::Service::default();
 
     loop {
         tokio::select! {
@@ -88,8 +90,15 @@ pub async fn serve_endpoint(
                 break;
             }
             _ = tick.tick() => {
-                wm.lock().await.tick();
+                {
+                    let mut world = wm.lock().await;
+                    world.tick();
+                    distant.poll(&mut world);
+                }
                 designer.lock().await.poll().await;
+                // A busy authority tick must give the QUIC writer/readers an
+                // opportunity to run, including on current-thread runtimes.
+                tokio::task::yield_now().await;
             }
             _ = industry_clock.tick() => {
                 // One bounded immutable batch; a slow solve cannot enqueue catch-up work or block player ticks.
@@ -146,6 +155,8 @@ pub async fn serve_endpoint(
         }
     }
 
+    // Cancels unstarted preview work without waiting under the world lock.
+    drop(distant);
     endpoint.close(0u32.into(), b"shutdown");
     // Finish message handlers before the caller takes its final save snapshot.
     while connections.join_next().await.is_some() {}
@@ -173,7 +184,7 @@ async fn handle_connection(
         tokio::time::timeout(std::time::Duration::from_secs(10), read_frame(&mut recv)).await??;
     let msg: ClientMessage = rmp_serde::from_slice(&frame).context("deserialize login")?;
 
-    let (pid, player_rx, design_tx) = match msg {
+    let (pid, player_rx, distant_rx, design_tx) = match msg {
         ClientMessage::Login {
             version,
             player_name,
@@ -187,6 +198,8 @@ async fn handle_connection(
             let mut manager = wm.lock().await;
             let pid = manager.allocate_player_id();
             let (player_tx, player_rx) = mpsc::channel::<ServerMessage>(64);
+            let (distant_tx, distant_rx) =
+                mpsc::channel::<ServerMessage>(crate::voxel::distant::FAR_QUEUE_CAPACITY);
 
             let world_seed = manager.world_seed;
             let rotation = match manager.register_profile(
@@ -212,6 +225,7 @@ async fn handle_connection(
                     return Err(e);
                 }
             };
+            manager.attach_distant_sender(pid, distant_tx)?;
             drop(manager);
             if let Err(e) = write_frame(
                 &mut send,
@@ -228,7 +242,7 @@ async fn handle_connection(
                 return Err(e);
             }
             info!(player_id = pid, %player_name, "Player logged in");
-            (pid, player_rx, player_tx)
+            (pid, player_rx, distant_rx, player_tx)
         }
         _ => anyhow::bail!("expected login message"),
     };
@@ -246,7 +260,16 @@ async fn handle_connection(
     let forwarder = tokio::spawn(
         async move {
             let mut rx = player_rx;
-            while let Some(msg) = rx.recv().await {
+            let mut distant_rx = distant_rx;
+            loop {
+                // Display traffic has its own bounded queue and cannot consume
+                // the reliable live queue's slots. Preserve far view/tile FIFO.
+                let msg = tokio::select! {
+                    biased;
+                    msg=rx.recv()=>msg,
+                    msg=distant_rx.recv()=>msg,
+                };
+                let Some(msg)=msg else {break;};
                 let data = match rmp_serde::to_vec(&msg) {
                     Ok(d) => d,
                     Err(e) => {
@@ -255,7 +278,8 @@ async fn handle_connection(
                     }
                 };
                 let mut s = send_clone.lock().await;
-                if write_frame(&mut s, &data).await.is_err() {
+                if let Err(error) = write_frame(&mut s, &data).await {
+                    warn!(player_id=pid,bytes=data.len(),live_queued=rx.len(),distant_queued=distant_rx.len(),error=%error,"server message write failed");
                     break;
                 }
             }
